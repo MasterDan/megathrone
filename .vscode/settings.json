@@ -1,0 +1,11 @@
+{
+    "editor.fontLigatures": true,
+    "cSpell.words": [
+        "daisyui",
+        "serde",
+        "solidjs",
+        "tailwindcss",
+        "tauri",
+        "vite"
+    ]
+}

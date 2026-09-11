@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Tauri: Debug (F5)",
+      "preLaunchTask": "vite: dev",
+      "postDebugTask": "kill: all",
+      "cargo": {
+        "args": ["build", "--manifest-path", "src-tauri/Cargo.toml"],
+        "filter": { "kind": "bin" }
+      },
+      "cwd": "${workspaceFolder}/src-tauri",
+      "env": {
+        "RUST_LOG": "info",
+        "RUST_BACKTRACE": "1"
+      },
+      "terminal": "integrated"
+    }
+  ]
+}

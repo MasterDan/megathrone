@@ -1,0 +1,17 @@
+node_modules
+dist
+dist-ssr
+*.local
+
+.DS_Store
+logs
+*.log
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+src-tauri/target/
+src-tauri/gen/schemas/
