@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@solidjs/router": "^0.15.3",
+    "@tauri-apps/api": "^2.11.1",
+    "solid-icons": "^1.2.0",
     "solid-js": "^1.9.9"
   },
   "devDependencies": {
