@@ -11,10 +11,17 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@elysiumorg/solid-use": "^0.1.25",
+    "@solid-primitives/event-listener": "^2.4.6",
+    "@solid-primitives/resize-observer": "^2.2.0",
     "@solidjs/router": "^0.15.3",
     "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "clsx": "^2.1.1",
     "solid-icons": "^1.2.0",
-    "solid-js": "^1.9.9"
+    "solid-js": "^1.9.9",
+    "solid-transition-group": "^0.3.0",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.11",
