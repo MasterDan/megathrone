@@ -20,12 +20,59 @@ const BYEDPI_SOURCE_SHA256: &str =
 
 fn main() {
     println!("cargo:rerun-if-env-changed=TARGET");
+    println!("cargo:rerun-if-env-changed=PROFILE");
     println!("cargo:rerun-if-env-changed=SING_BOX_VERSION");
     println!("cargo:rerun-if-env-changed=BYEDPI_VERSION");
 
-    fetch_sing_box();
-    fetch_byedpi();
+    let target = env::var("TARGET").expect("cargo always sets TARGET");
+    let sing_box_version = fetch_sing_box(&target);
+    let byedpi_version = fetch_byedpi(&target);
+    if target.contains("-darwin") && env::var("PROFILE").as_deref() == Ok("release") {
+        // `tauri build --target universal-apple-darwin` expects fat sidecars named
+        // after the universal triple (`<name>-universal-apple-darwin`): the CLI
+        // lipo-merges only the app binary, the sidecars must already be universal.
+        // Fetch the other arch's slices and stitch both into one file.
+        let other = other_darwin_triple(&target);
+        fetch_sing_box(other);
+        fetch_byedpi(other);
+        lipo_universal("sing-box", &target, other, &sing_box_version);
+        lipo_universal("byedpi", &target, other, &byedpi_version);
+    }
     tauri_build::build();
+}
+
+fn other_darwin_triple(target: &str) -> &'static str {
+    if target.starts_with("aarch64") {
+        "x86_64-apple-darwin"
+    } else {
+        "aarch64-apple-darwin"
+    }
+}
+
+fn lipo_universal(name: &str, triple_a: &str, triple_b: &str, version: &str) {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo always sets CARGO_MANIFEST_DIR");
+    let bin_dir = Path::new(&manifest_dir).join("binaries");
+    let dest = bin_dir.join(format!("{name}-universal-apple-darwin"));
+    let stamp = bin_dir.join(format!("{name}-universal-apple-darwin.version"));
+
+    let cached = dest.is_file() && fs::read_to_string(&stamp).map(|v| v == version).unwrap_or(false);
+    if cached {
+        println!("{name} {version} universal: already stitched");
+        return;
+    }
+
+    let mut lipo = Command::new("lipo");
+    lipo
+        .arg("-create")
+        .arg("-output")
+        .arg(&dest)
+        .arg(bin_dir.join(format!("{name}-{triple_a}")))
+        .arg(bin_dir.join(format!("{name}-{triple_b}")));
+    run(lipo, "lipo (stitch universal sidecar)");
+    make_executable(&dest);
+    fs::write(&stamp, version).expect("failed to write version stamp");
+
+    println!("{name} {version} universal: ready ({})", dest.display());
 }
 
 struct PlatformAsset {
@@ -68,15 +115,14 @@ fn asset_for(target: &str, version: &str) -> PlatformAsset {
     }
 }
 
-fn fetch_sing_box() {
-    let target = env::var("TARGET").expect("cargo always sets TARGET");
+fn fetch_sing_box(target: &str) -> String {
     let version = env::var("SING_BOX_VERSION").unwrap_or_else(|_| DEFAULT_SING_BOX_VERSION.to_string());
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo always sets CARGO_MANIFEST_DIR");
     let bin_dir = Path::new(&manifest_dir).join("binaries");
     fs::create_dir_all(&bin_dir).expect("failed to create src-tauri/binaries");
 
-    let asset = asset_for(&target, &version);
+    let asset = asset_for(target, &version);
     let archive_name = format!("{}.{}", asset.base_name, asset.archive_ext);
     let exe_suffix = if asset.is_windows { ".exe" } else { "" };
     let dest = bin_dir.join(format!("sing-box-{target}{exe_suffix}"));
@@ -85,7 +131,7 @@ fn fetch_sing_box() {
     let cached = dest.is_file() && fs::read_to_string(&stamp).map(|v| v == version).unwrap_or(false);
     if cached {
         println!("sing-box {version} for {target}: already fetched");
-        return;
+        return version;
     }
 
     let url =
@@ -119,6 +165,7 @@ fn fetch_sing_box() {
     let _ = fs::remove_dir_all(&tmp_dir);
 
     println!("sing-box {version} for {target}: ready ({})", dest.display());
+    version
 }
 
 // ---------------------------------------------------------------------------
@@ -174,15 +221,14 @@ fn byedpi_asset_for(target: &str, asset_version: &str) -> ByedpiAsset {
     }
 }
 
-fn fetch_byedpi() {
-    let target = env::var("TARGET").expect("cargo always sets TARGET");
+fn fetch_byedpi(target: &str) -> String {
     let version = env::var("BYEDPI_VERSION").unwrap_or_else(|_| DEFAULT_BYEDPI_VERSION.to_string());
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo always sets CARGO_MANIFEST_DIR");
     let bin_dir = Path::new(&manifest_dir).join("binaries");
     fs::create_dir_all(&bin_dir).expect("failed to create src-tauri/binaries");
 
-    let asset = byedpi_asset_for(&target, &byedpi_asset_version(&version));
+    let asset = byedpi_asset_for(target, &byedpi_asset_version(&version));
     let is_windows = matches!(asset, ByedpiAsset::Release { zip: true, .. }) && target.contains("windows");
     let exe_suffix = if is_windows { ".exe" } else { "" };
     let dest = bin_dir.join(format!("byedpi-{target}{exe_suffix}"));
@@ -191,7 +237,7 @@ fn fetch_byedpi() {
     let cached = dest.is_file() && fs::read_to_string(&stamp).map(|v| v == version).unwrap_or(false);
     if cached {
         println!("byedpi {version} for {target}: already fetched");
-        return;
+        return version;
     }
 
     let tmp_dir = bin_dir.join(format!(".tmp-byedpi-{target}"));
@@ -218,9 +264,10 @@ fn fetch_byedpi() {
             tar.arg("-xf").arg(&archive_path).arg("-C").arg(&tmp_dir);
             run(tar, "tar (extract)");
 
-            let binary_name = if is_windows { "ciadpi.exe" } else { "ciadpi" };
-            let binary = find_file(&tmp_dir, binary_name)
-                .unwrap_or_else(|| panic!("`{binary_name}` not found inside the extracted archive"));
+            // Prebuilt archives carry arch-suffixed binary names (`ciadpi-x86_64`),
+            // the source build produces a bare `ciadpi` — accept both.
+            let binary = find_byedpi_binary(&tmp_dir, is_windows)
+                .unwrap_or_else(|| panic!("no ciadpi binary found inside the extracted archive"));
             fs::copy(&binary, &dest).expect("failed to copy byedpi binary into place");
         }
         ByedpiAsset::Source => {
@@ -249,8 +296,13 @@ fn fetch_byedpi() {
                 .arg("1");
             run(tar, "tar (extract)");
 
+            // AppleClang builds for the host arch by default; pin the slice's
+            // arch so the x86_64 half of a universal build is a real
+            // cross-compile. Passed as a make argument (overrides any makefile
+            // assignment, unlike an env var).
+            let arch = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
             let mut make = Command::new("make");
-            make.arg("-C").arg(&src_dir).env("CC", "cc");
+            make.arg("-C").arg(&src_dir).arg(format!("CC=cc -arch {arch}"));
             run(make, "make (build ciadpi)");
 
             let binary = src_dir.join("ciadpi");
@@ -266,12 +318,19 @@ fn fetch_byedpi() {
     let _ = fs::remove_dir_all(&tmp_dir);
 
     println!("byedpi {version} for {target}: ready ({})", dest.display());
+    version
 }
 
 fn expected_sha256(repo: &str, asset_name: &str, version: &str) -> String {
     let api_url = format!("https://api.github.com/repos/{repo}/releases/tags/v{version}");
-    let output = Command::new("curl")
-        .args(["-fsSL", "-H", "Accept: application/vnd.github+json"])
+    let mut curl = Command::new("curl");
+    curl.args(["-fsSL", "-H", "Accept: application/vnd.github+json"]);
+    // Anonymous API calls from CI runners share a 60 req/h per-IP limit;
+    // ride the workflow token when one is present.
+    if let Ok(token) = env::var("GITHUB_TOKEN").or_else(|_| env::var("GH_TOKEN")) {
+        curl.args(["-H", &format!("Authorization: Bearer {token}")]);
+    }
+    let output = curl
         .arg(&api_url)
         .output()
         .expect("failed to spawn curl");
@@ -329,6 +388,31 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
+fn find_byedpi_binary(dir: &Path, is_windows: bool) -> Option<PathBuf> {
+    let exact = if is_windows { "ciadpi.exe" } else { "ciadpi" };
+    find_file(dir, exact).or_else(|| find_file_prefixed(dir, "ciadpi"))
+}
+
+fn find_file_prefixed(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_prefixed(&path, prefix) {
+                return Some(found);
+            }
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(prefix))
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
 fn make_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -339,6 +423,9 @@ fn make_executable(path: &Path) {
     fs::set_permissions(path, permissions)
         .unwrap_or_else(|e| panic!("failed to chmod {}: {e}", path.display()));
 }
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
 
 fn run(mut command: Command, what: &str) {
     let status = command.status().unwrap_or_else(|e| panic!("failed to spawn {what}: {e}"));
