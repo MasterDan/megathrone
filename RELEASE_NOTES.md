@@ -67,3 +67,80 @@ runtime.
 - SSR links are not supported
 - A DPI fallback action requires a selected strategy: without one, connecting with
   a DPI fallback is a hard error rather than silent misrouting
+
+---
+
+## v0.2.0 — Android & a new desktop UI
+
+The first Android build ships, and the desktop interface gets a real layout: a
+sidebar, page-level scroll zones and a bottom activity bar. Under the hood the
+sidecar plumbing is now shared code between desktop and Android.
+
+### What's inside
+
+- **Android app** — an arm64 APK with sing-box and byedpi bundled inside the
+  package as native libraries (Android forbids exec'ing binaries from the app
+  data dir, so they ride the APK's `nativeLibraryDir` instead); byedpi is
+  compiled from source with the NDK — upstream publishes no Android builds
+- **Foreground service** — while connected, a `dataSync` foreground service
+  keeps the proxy alive when the app goes to the background
+- **Stable APK signature** — the APK is signed with a committed keystore, so
+  sideloaded updates install over previous builds
+- **Desktop layout rework** — a sidebar where the brand crown is the connect
+  control and the profile list carries per-row toggles (switching the live
+  session without a restart); pages render in their own scroll zones; a bottom
+  activity bar tracks every running job — latency scans, the DPI strategy
+  test, profile updates — with progress and stop controls
+- **Traffic charts on the dashboard** — live per-outbound charts pin under the
+  endpoint grid while connected; clicking them opens the Stats page
+- **DPI strategies get their own page** — `/dpi` on desktop (legacy
+  `/settings?tab=dpi` links redirect); Settings keeps General and Routing
+- **One codebase, two interfaces** — the UI variant (desktop vs mobile) is
+  resolved at build time; `?ui=mobile` forces the mobile layout at runtime for
+  debugging
+
+### Under the hood
+
+- The sidecar spawn layer moved in-house (`src-tauri/src/process.rs`): a
+  faithful subset of the old shell-plugin sidecar API over `shared_child`, used
+  identically on desktop and Android — `tauri-plugin-shell` is gone from the
+  project
+- byedpi is compiled from source on macOS as well (sha256-pinned tarball),
+  since upstream publishes no darwin builds; release-profile macOS builds lipo
+  both arch slices into universal binaries
+- `externalBin` moved into per-platform config overlays
+  (`tauri.{macos,linux,windows}.conf.json`) so mobile builds never see it
+- CI gained a `build-android` job that builds and signs the APK; the Arch
+  package version is sanitized for non-tag workflow runs
+
+### Downloads
+
+| OS      | Artifact                                                 |
+| ------- | -------------------------------------------------------- |
+| Windows | `Megathrone_0.2.0_x64-setup.exe` (NSIS)                  |
+| macOS   | `Megathrone_0.2.0_universal.dmg` (Apple Silicon + Intel)  |
+| Linux   | `.deb`, `.rpm`, `.AppImage`                              |
+| Arch    | `megathrone-0.2.0-1-x86_64.pkg.tar.zst`, tarball         |
+| Android | `megathrone-v0.2.0-android-arm64.apk`                    |
+
+All bundles include the sing-box and byedpi sidecars — nothing is downloaded at
+runtime.
+
+### Notes
+
+- **Android:** sideload the APK — the committed keystore keeps the signature
+  stable, so future releases install on top. Apps with a built-in proxy setting
+  can point at the raw local proxy (`127.0.0.1:7890` by default) to follow the
+  selected endpoint; device-wide capture is not available yet
+- macOS and Windows notes are unchanged from v0.1.0 (ad-hoc signed, not
+  notarized / unsigned installer — SmartScreen)
+
+### Known limitations
+
+- TUN mode is not available on Android — a VpnService-based tunnel is future
+  work; a stored TUN selection degrades to system-proxy
+- System-proxy wiring is macOS-only (a no-op elsewhere)
+- SSR links are not supported
+- A DPI fallback action requires a selected strategy: without one, connecting
+  with a DPI fallback is a hard error rather than silent misrouting
+- No in-app auto-update yet — watch the releases page
