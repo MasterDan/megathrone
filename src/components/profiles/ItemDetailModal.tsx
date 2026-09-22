@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TbOutlineCheck, TbOutlineCopy } from "solid-icons/tb";
 
 import { Modal } from "@/components/common/daisy-ui/Modal";
+import { PROTOCOL_BADGES } from "@/components/profiles/EndpointCard";
 import type { EndpointItem, ItemDetail } from "@/types";
 
 interface Props {
@@ -63,7 +64,11 @@ export const ItemDetailModal: Component<Props> = (props) => {
               <p class="min-w-0 truncate text-xs text-base-content/50">
                 {item.server}:{item.serverPort}
               </p>
-              <span class="badge badge-primary shrink-0">{item.protocol}</span>
+              <span
+                class={`badge badge-sm shrink-0 ${PROTOCOL_BADGES[item.protocol] ?? "badge-ghost"}`}
+              >
+                {item.protocol}
+              </span>
             </div>
 
             <Show

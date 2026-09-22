@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
-use tauri_plugin_shell::ShellExt;
 use tokio::sync::Notify;
 
 mod auto_select;
@@ -10,12 +9,15 @@ mod db;
 mod dpi;
 mod dpi_test;
 mod latency;
+mod mobile;
 mod parser;
+mod process;
 mod profiles;
 mod routing;
 mod scheduler;
 mod settings;
 mod sites;
+#[cfg(desktop)]
 mod tray;
 
 pub struct AppState {
@@ -31,10 +33,8 @@ impl AppState {
 }
 
 #[tauri::command]
-async fn sing_box_version(app: tauri::AppHandle) -> Result<String, String> {
-    let output = app
-        .shell()
-        .sidecar("sing-box")
+async fn sing_box_version() -> Result<String, String> {
+    let output = process::sidecar("sing-box")
         .map_err(|e| format!("failed to resolve sing-box sidecar: {e}"))?
         .args(["version"])
         .output()
@@ -53,12 +53,22 @@ async fn sing_box_version(app: tauri::AppHandle) -> Result<String, String> {
     Ok(stdout.lines().next().unwrap_or_default().trim().to_string())
 }
 
+// the mobile entry point (Android/iOS): the attribute generates the JNI
+// bootstrap the generated gradle/Xcode project loads
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let auto_update_notify = Arc::new(Notify::new());
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_dialog::init())
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // the Android foreground-service bridge (a no-op plugin elsewhere is not
+    // registered at all)
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(mobile::service_plugin());
+    }
+
+    builder
         .setup({
             let notify = auto_update_notify.clone();
             move |app| {
@@ -83,6 +93,8 @@ pub fn run() {
                 connection::install_exit_signals(app.handle());
                 // the tray icon (status menu + the real quit); the window's
                 // close button hides into it unless the user opted out
+                // (desktop only — Android has no tray and no window close)
+                #[cfg(desktop)]
                 tray::init(app.handle())?;
                 Ok(())
             }
@@ -145,6 +157,8 @@ pub fn run() {
             routing::routing_set_fallback
         ])
         .on_window_event(|window, event| {
+            // desktop only: hiding into the tray instead of quitting
+            #[cfg(desktop)]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 // the tray is always alive, so defaulting to "hide" on a
@@ -161,6 +175,10 @@ pub fn run() {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+            }
+            #[cfg(not(desktop))]
+            {
+                let _ = (window, event);
             }
         })
         .build(tauri::generate_context!())

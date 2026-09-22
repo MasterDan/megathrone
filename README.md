@@ -67,6 +67,26 @@ Grab a bundle from [releases](../../releases):
 
 All bundles ship the sing-box and byedpi sidecars — nothing is downloaded at runtime.
 
+## Running on macOS
+
+The release builds are ad-hoc signed and not notarized, so Gatekeeper will block a
+freshly downloaded app. After copying **Megathrone.app** to `/Applications`, remove
+the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Megathrone.app
+```
+
+System Proxy mode works from a regular launch. **TUN mode needs administrator
+privileges** to create the network interface, so start the app's binary with sudo:
+
+```bash
+sudo /Applications/Megathrone.app/Contents/MacOS/megathrone
+```
+
+Without elevation the app refuses TUN up front with an actionable error — use System
+Proxy mode instead.
+
 ## Building from source
 
 Prerequisites: Rust (stable), Node.js 22, pnpm 11.

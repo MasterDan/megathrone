@@ -15,6 +15,7 @@ import {
 
 import { Empty } from "@/components/common/Empty";
 import { OptionTabs } from "@/components/common/daisy-ui/OptionTabs";
+import { useIsMobileUi } from "@/contexts/uiVariant";
 import { CategoryModal } from "@/components/settings/CategoryModal";
 import { ACTION_LABELS, RULE_TYPE_ITEMS } from "@/components/settings/routingOptions";
 import { useTestSites } from "@/hooks/data/useTestSites";
@@ -156,6 +157,7 @@ export const CategoryPage: Component = () => {
   const params = useParams();
   const navigate = useNavigate();
   const sites = useTestSites();
+  const isMobile = useIsMobileUi();
 
   const [renameOpened, setRenameOpened] = createSignal(false);
   const [confirmDelete, setConfirmDelete] = createSignal(false);
@@ -234,7 +236,13 @@ export const CategoryPage: Component = () => {
       <Show when={category()}>
         {(current) => (
           <>
-            <div class="sticky top-14 z-40 -mx-4 rounded-2xl border border-base-content/10 bg-base-100/60 px-4 py-2.5 shadow-sm backdrop-blur-md">
+            <div
+              classList={{
+                "sticky z-40 -mx-4 rounded-2xl border border-base-content/10 bg-base-100/60 px-4 py-2.5 shadow-sm backdrop-blur-md": true,
+                "top-14": isMobile(),
+                "top-0": !isMobile(),
+              }}
+            >
               <div class="grid grid-cols-[1fr_auto_1fr] items-center gap-x-2 gap-y-1">
                 <div class="flex min-w-0 items-center gap-2">
                   <A

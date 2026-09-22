@@ -36,8 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri::async_runtime::Receiver;
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
-use tauri_plugin_shell::ShellExt;
+use crate::process::{CommandChild, CommandEvent};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::AppState;
@@ -121,6 +120,10 @@ struct MacServiceBackup {
 enum SystemProxyRestore {
     #[default]
     Untouched,
+    /// only ever constructed on macOS (the system-proxy integration); the
+    /// match arms elsewhere stay cross-platform, so silence Android's
+    /// never-constructed warning
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     MacOs(Vec<MacServiceBackup>),
 }
 
@@ -384,12 +387,25 @@ pub async fn connection_connect(
 
     // creating a TUN interface needs root on macOS/Windows — fail up front
     // with a clear reason instead of an obscure sing-box exit
+    #[cfg(not(target_os = "android"))]
     if mode == MODE_TUN && !running_as_root() {
         return Err(
             "TUN mode needs administrator privileges to create the network interface, \
              but the app is running as a regular user. For development launch the app \
              elevated (e.g. `sudo pnpm tauri dev`, or build once and run the binary with \
              sudo) — or use System Proxy mode instead."
+                .to_string(),
+        );
+    }
+
+    // Android TUN needs a VpnService-based tunnel (a Kotlin service owning
+    // the VPN), which is not wired up yet — refuse clearly instead of
+    // failing inside sing-box
+    #[cfg(target_os = "android")]
+    if mode == MODE_TUN {
+        return Err(
+            "TUN mode is not available on Android yet — it needs a VpnService-based \
+             tunnel planned for a future version. Use the local proxy instead."
                 .to_string(),
         );
     }
@@ -500,7 +516,7 @@ pub async fn connection_connect(
         write_config(&config_path, &config)?;
         let config_arg = config_path.to_string_lossy().to_string();
 
-        let check = latency::sidecar(&app)?;
+        let check = latency::sidecar()?;
         let output = check.args(["check", "-c", &config_arg]).output().await.map_err(|error| {
             let _ = std::fs::remove_file(&config_path);
             abort_dpi(dpi_run.take());
@@ -562,7 +578,7 @@ pub async fn connection_connect(
     }
     let config_arg = config_path.to_string_lossy().to_string();
 
-    let runner = latency::sidecar(&app)?;
+    let runner = latency::sidecar()?;
     let (events, child) = runner.args(["run", "-c", &config_arg]).spawn().map_err(|error| {
         let _ = std::fs::remove_file(&config_path);
         abort_dpi(dpi_run.take());
@@ -634,6 +650,8 @@ pub async fn connection_connect(
     spawn_watcher(app.clone(), events);
     // live traffic charts feed on the clash API of the running instance
     start_traffic_poller(&app, api_port);
+    // Android: a foreground service keeps the session alive in background
+    crate::mobile::set_foreground_service(true);
     // automatic strategies keep the live endpoint fed by a background
     // supervisor (scan pass → switch); manual selections run bare
     if selection_mode != profiles::SELECT_MANUAL {
@@ -981,6 +999,9 @@ fn abort_dpi(dpi: Option<DpiRunning>) {
 /// session marker is removed on success (kept on failure → the next start
 /// retries the restore).
 async fn teardown(app: &AppHandle, running: &mut Running) -> Result<(), String> {
+    // Android: the session is going down — the foreground service must not
+    // outlive it (deliberate disconnect, crash cleanup, mid-flight rebuild)
+    crate::mobile::set_foreground_service(false);
     let restore = std::mem::take(&mut running.restore);
     let restored = match &restore {
         SystemProxyRestore::Untouched => Ok(()),
@@ -1317,9 +1338,7 @@ async fn start_byedpi(
     args: &str,
     strategy_name: &str,
 ) -> Result<DpiRunning, String> {
-    let command = app
-        .shell()
-        .sidecar("byedpi")
+    let command = crate::process::sidecar("byedpi")
         .map_err(|e| format!("failed to resolve the byedpi sidecar: {e}"))?;
     let command = command
         .args(["-i", "127.0.0.1", "-p", &port.to_string()])
@@ -1590,7 +1609,7 @@ fn permission_hint(mode: &str, reason: &str) -> String {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 fn running_as_root() -> bool {
     // SAFETY: geteuid is a side-effect-free system call
     unsafe { libc::geteuid() == 0 }
@@ -2001,6 +2020,7 @@ fn resolve_raw_port(configured: u16) -> u16 {
 
 /// Parses `-getwebproxy`-style output into the previous state; `None` when
 /// the output cannot be understood (→ the service must not be touched).
+#[cfg(target_os = "macos")]
 fn parse_proxy_state(output: &str) -> Option<ProxyBackup> {
     let mut enabled: Option<bool> = None;
     let mut host: Option<String> = None;
@@ -2936,7 +2956,7 @@ Authenticated Proxy: 0";
             b"FATAL[0000] start service: create tun interface: ".to_vec(),
         ))
         .expect("send chunk 1");
-        tx.blocking_send(CommandEvent::Terminated(tauri_plugin_shell::process::TerminatedPayload {
+        tx.blocking_send(CommandEvent::Terminated(crate::process::TerminatedPayload {
             code: Some(1),
             signal: None,
         }))
@@ -2988,7 +3008,7 @@ Authenticated Proxy: 0";
         let (tx, rx) = tauri::async_runtime::channel::<CommandEvent>(16);
         tx.blocking_send(CommandEvent::Stderr(b"bind: Address already in use\n".to_vec()))
             .expect("send stderr");
-        tx.blocking_send(CommandEvent::Terminated(tauri_plugin_shell::process::TerminatedPayload {
+        tx.blocking_send(CommandEvent::Terminated(crate::process::TerminatedPayload {
             code: Some(1),
             signal: None,
         }))

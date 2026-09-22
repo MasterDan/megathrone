@@ -32,6 +32,9 @@ export interface VirtualWindowGridProps<T> {
   onRangeChange?: (start: number, end: number) => void;
   /** Receives the imperative API (scroll-to-cell) once, on mount. */
   onApi?: (api: VirtualWindowGridApi) => void;
+  /** Scrollable element driving the window (the desktop layout's content
+   *  zone). Omitted — the document window scrolls (the mobile layout). */
+  scroller?: () => HTMLElement | null;
   children: (item: T) => JSXElement;
 }
 
@@ -50,9 +53,11 @@ export interface VirtualWindowGridApi {
  *  window resizes. */
 export const VirtualWindowGrid = <T,>(props: VirtualWindowGridProps<T>) => {
   const windowSize = createWindowSize();
+  const scroller = () => props.scroller?.() ?? null;
 
   let container: HTMLDivElement | undefined;
-  const [scrollTop, setScrollTop] = createSignal(window.scrollY);
+  const [scrollTop, setScrollTop] = createSignal(0);
+  const [containerHeight, setContainerHeight] = createSignal(window.innerHeight);
   const [gridTop, setGridTop] = createSignal(0);
 
   const columns = createMemo(() => {
@@ -65,13 +70,28 @@ export const VirtualWindowGrid = <T,>(props: VirtualWindowGridProps<T>) => {
     return count;
   });
 
-  // Reading the container rect together with scrollY gives the grid's
-  // document-space top, immune to whatever happens above it (sticky header
-  // wrapping, alerts appearing). rAF-batched to one read per scroll frame.
+  // Reading the container rect together with the scroll position gives the
+  // grid's top in scroll space — document space for the window, content
+  // space for a scroll zone — immune to whatever happens above it (sticky
+  // header wrapping, alerts appearing). rAF-batched to one read per frame.
   let frame = 0;
   const measure = () => {
     frame = 0;
+    const zone = scroller();
+    if (zone) {
+      setScrollTop(zone.scrollTop);
+      setContainerHeight(zone.clientHeight);
+      if (container) {
+        setGridTop(
+          container.getBoundingClientRect().top -
+            zone.getBoundingClientRect().top +
+            zone.scrollTop,
+        );
+      }
+      return;
+    }
     setScrollTop(window.scrollY);
+    setContainerHeight(window.innerHeight);
     if (container) {
       setGridTop(container.getBoundingClientRect().top + window.scrollY);
     }
@@ -87,6 +107,15 @@ export const VirtualWindowGrid = <T,>(props: VirtualWindowGridProps<T>) => {
     props.onApi?.({ scrollToIndex });
     makeEventListener(window, "scroll", scheduleMeasure, { passive: true });
     makeEventListener(window, "resize", scheduleMeasure);
+    const zone = scroller();
+    if (zone) {
+      makeEventListener(zone, "scroll", scheduleMeasure, { passive: true });
+    }
+  });
+  // a zone element that shows up late (or gets swapped) must be re-measured
+  createEffect(() => {
+    scroller();
+    scheduleMeasure();
   });
   // Layout shifts above the grid (an alert toggling, late fonts) move it
   // without any scroll/resize — watching the page height catches those too.
@@ -104,7 +133,12 @@ export const VirtualWindowGrid = <T,>(props: VirtualWindowGridProps<T>) => {
   const scrollToIndex = (index: number, topOffset = 0) => {
     const row = Math.floor(Math.max(0, index) / columns());
     const top = Math.max(0, gridTop() + row * rowStep() - topOffset);
-    window.scrollTo({ top });
+    const zone = scroller();
+    if (zone) {
+      zone.scrollTo({ top });
+    } else {
+      window.scrollTo({ top });
+    }
   };
 
   /** Visible row range [start, end) in row units. */
@@ -113,8 +147,9 @@ export const VirtualWindowGrid = <T,>(props: VirtualWindowGridProps<T>) => {
     const step = rowStep();
     const top = gridTop();
     const rows = rowCount();
+    const viewport = () => (scroller() ? containerHeight() : windowSize.height);
     const first = Math.floor((scrollTop() - top) / step);
-    const last = Math.ceil((scrollTop() + windowSize.height - top) / step);
+    const last = Math.ceil((scrollTop() + viewport() - top) / step);
     const start = Math.min(Math.max(0, first - overscan), rows);
     const end = Math.min(rows, Math.max(0, last) + overscan);
     return [start, Math.max(start, end)];

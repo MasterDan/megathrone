@@ -16,8 +16,7 @@ serde_json = "1"
 sha2 = "0.10"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-shell = "2"
+tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -27,9 +26,22 @@ base64 = "0.23.1"
 ureq = { version = "3.4.1", features = ["json"] }
 tauri-plugin-dialog = "2.7.3"
 tokio = { version = "1.53.1", features = ["macros", "sync", "time", "signal"] }
+# the sidecar process plumbing (see src/process.rs): one shared wait/kill
+# surface over the spawned sing-box/byedpi children, desktop and Android
+shared_child = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# the system tray is a desktop-only feature of the tauri crate
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+
+# Android: JNI access to the Activity (nativeLibraryDir for the sidecar
+# binaries packaged as fake .so jniLibs, the foreground-service plugin)
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 [profile.release]
 codegen-units = 1

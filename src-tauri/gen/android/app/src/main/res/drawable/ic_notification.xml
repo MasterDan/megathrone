@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A simplified crown-of-nodes mark (white, notification-bar sized). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4,18 L4,9 L8.5,12.5 L12,6 L15.5,12.5 L20,9 L20,18 Z M6,15.5 L18,15.5 L18,16.5 L6,16.5 Z" />
+</vector>

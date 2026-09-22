@@ -92,5 +92,19 @@ export function useConnection() {
 
   const dismissError = () => setError(null);
 
-  return { snapshot, busy, error, connect, disconnect, dismissError };
+  /** Re-adopts the backend truth (`connection_status`). A rejected connect
+   *  can leave a live session behind while the snapshot says otherwise —
+   *  callers refresh so the UI can't keep lying about the state. */
+  const refresh = async () => {
+    try {
+      const status = await invoke<ConnectionSnapshot | null>("connection_status");
+      if (status) {
+        apply(status);
+      }
+    } catch {
+      // keep the current view; the next event will correct it
+    }
+  };
+
+  return { snapshot, busy, error, connect, disconnect, dismissError, refresh };
 }

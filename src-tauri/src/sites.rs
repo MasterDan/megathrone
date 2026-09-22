@@ -107,6 +107,7 @@ const DEFAULT_SITES: &[(&str, &[&str])] = &[
             "rr1---sn-q4fl6n6y.googlevideo.com",
             "rr2---sn-hgn7ynek.googlevideo.com",
             "rr1---sn-xguxaxjvh-gufl.googlevideo.com",
+            "googlevideo.com",
         ],
     ),
     (
@@ -127,6 +128,7 @@ const DEFAULT_SITES: &[(&str, &[&str])] = &[
             "medium.com",
             "x.com",
             "twitter.com",
+            "twimg.com",
             "soundcloud.com",
         ],
     ),
@@ -171,6 +173,7 @@ const DEFAULT_SITES: &[(&str, &[&str])] = &[
             "wallet.telegram.org",
             "pay.telegram.org",
             "telegram.me",
+            "t.me",
             "telegram.dog",
             "telegra.ph",
             "telesco.pe",
@@ -216,6 +219,8 @@ const DEFAULT_SITES: &[(&str, &[&str])] = &[
             "youtubei.googleapis.com",
             "manifest.googlevideo.com",
             "yt3.googleusercontent.com",
+            "ytimg.com",
+            "ggpht.com",
         ],
     ),
 ];

@@ -24,7 +24,6 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_shell::ShellExt;
 
 use crate::AppState;
 use crate::parser;
@@ -268,10 +267,9 @@ pub async fn profile_test_endpoint_urls(
 
     // validate up front so a broken outbound fails fast with a clear error
     // instead of a startup timeout
-    let check_app = app.clone();
-    let values = vec![outbound.clone()];
+        let values = vec![outbound.clone()];
     let valid = tauri::async_runtime::spawn_blocking(move || {
-        run_sing_box_check(&check_app, api_port, &values)
+        run_sing_box_check(api_port, &values)
     })
     .await
     .map_err(|error| format!("config validation failed: {error}"))??;
@@ -285,7 +283,7 @@ pub async fn profile_test_endpoint_urls(
     sing_box.config_path = config_path.clone();
     let config_arg = config_path.to_string_lossy().to_string();
 
-    let runner = sidecar(&app)?;
+    let runner = sidecar()?;
     let (_events, child) = runner
         .args(["run", "-c", &config_arg])
         .spawn()
@@ -421,10 +419,9 @@ pub(crate) async fn run_scan(
 
         // validate up front and isolate rows the current sing-box refuses to
         // load, so one broken outbound cannot kill the whole scan
-        let check_app = app.clone();
-        let rows = outbounds;
+                let rows = outbounds;
         let validated = tauri::async_runtime::spawn_blocking(move || {
-            let check = |values: &[Value]| run_sing_box_check(&check_app, api_port, values);
+            let check = |values: &[Value]| run_sing_box_check(api_port, values);
             isolate_bad_outbounds(&rows, &check)
         })
         .await
@@ -441,7 +438,7 @@ pub(crate) async fn run_scan(
             sing_box.config_path = config_path.clone();
             let config_arg = config_path.to_string_lossy().to_string();
 
-            let runner = sidecar(app)?;
+            let runner = sidecar()?;
             let (_events, child) = runner
                 .args(["run", "-c", &config_arg])
                 .spawn()
@@ -709,16 +706,15 @@ fn apply_url_probes(conn: &Connection, probes: &[UrlProbe]) -> Result<(), String
 // The throwaway sing-box instance
 // ---------------------------------------------------------------------------
 
-pub(crate) fn sidecar(app: &AppHandle) -> Result<tauri_plugin_shell::process::Command, String> {
-    app.shell()
-        .sidecar("sing-box")
+pub(crate) fn sidecar() -> Result<crate::process::Command, String> {
+    crate::process::sidecar("sing-box")
         .map_err(|error| format!("failed to resolve sing-box sidecar: {error}"))
 }
 
 /// Kills the throwaway sing-box instance and removes its config when the scan
 /// ends for any reason (including early returns and panics).
 pub(crate) struct SingBoxGuard {
-    pub(crate) child: Option<tauri_plugin_shell::process::CommandChild>,
+    pub(crate) child: Option<crate::process::CommandChild>,
     pub(crate) config_path: PathBuf,
     /// set when the instance failed to start — keep the config for debugging
     pub(crate) keep_config: bool,
@@ -804,7 +800,7 @@ pub(crate) fn free_local_port() -> Result<u16, String> {
 
 /// `sing-box check` on a throwaway config built from `values`; must run on a
 /// blocking thread (it drives an async sidecar call via `block_on`).
-fn run_sing_box_check(app: &AppHandle, api_port: u16, values: &[Value]) -> Result<bool, String> {
+fn run_sing_box_check(api_port: u16, values: &[Value]) -> Result<bool, String> {
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("megathrone-urltest-check-{unique}.json"));
@@ -812,7 +808,7 @@ fn run_sing_box_check(app: &AppHandle, api_port: u16, values: &[Value]) -> Resul
         .map_err(|e| format!("failed to serialize config: {e}"))?;
     std::fs::write(&path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
 
-    let check = sidecar(app)?;
+    let check = sidecar()?;
     let output = tauri::async_runtime::block_on(check.args(["check", "-c", &path.to_string_lossy()]).output())
         .map_err(|error| format!("failed to run sing-box check: {error}"))?;
     let _ = std::fs::remove_file(&path);
@@ -851,9 +847,9 @@ pub(crate) async fn isolate_unloadable_outbounds(
     rows: Vec<OutboundRow>,
 ) -> Result<(Vec<OutboundRow>, Vec<i64>), String> {
     let api_port = free_local_port()?;
-    let app = app.clone();
+    let _ = app;
     tauri::async_runtime::spawn_blocking(move || {
-        let check = |values: &[Value]| run_sing_box_check(&app, api_port, values);
+        let check = |values: &[Value]| run_sing_box_check(api_port, values);
         isolate_bad_outbounds(&rows, &check)
     })
     .await

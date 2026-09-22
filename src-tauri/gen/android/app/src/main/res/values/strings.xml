@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">"Megathrone"</string>
+    <string name="main_activity_title">"Megathrone"</string>
+    <string name="proxy_channel_name">"Proxy session"</string>
+    <string name="proxy_channel_description">"Shown while the proxy is connected"</string>
+    <string name="proxy_notification_title">"Megathrone is connected"</string>
+    <string name="proxy_notification_text">"The proxy session is running in the background"</string>
+</resources>

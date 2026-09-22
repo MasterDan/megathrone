@@ -6,12 +6,12 @@ import type { EndpointItem } from "@/types";
 import { UrlScoreBadge, UrlTestButton } from "./UrlScoreBadge";
 
 export const PROTOCOL_BADGES: Record<string, string> = {
-  vless: "badge-info",
-  vmess: "badge-success",
-  trojan: "badge-warning",
-  shadowsocks: "badge-secondary",
-  hysteria2: "badge-error",
-  tuic: "badge-accent",
+  vless: "bg-sky-600 text-sky-50",
+  vmess: "bg-cyan-600 text-cyan-50",
+  trojan: "bg-purple-600 text-purple-50",
+  shadowsocks: "bg-pink-600 text-pink-50",
+  hysteria2: "bg-orange-600 text-orange-50",
+  tuic: "bg-fuchsia-600 text-fuchsia-50",
 };
 
 interface Props {

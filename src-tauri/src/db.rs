@@ -115,7 +115,7 @@ INSERT OR IGNORE INTO app_settings (key, value) VALUES ('raw_proxy_enabled', '1'
 INSERT OR IGNORE INTO app_settings (key, value) VALUES ('raw_proxy_port', '7890');
 ";
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
@@ -219,6 +219,46 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         conn.execute_batch(
             "UPDATE profiles SET selection_mode = 'manual'
               WHERE selected_endpoint_key IS NOT NULL AND selected_endpoint_key != '';",
+        )?;
+    }
+
+    // v11: the default catalog gained whole-domain suffix rules (the CDN
+    // domains its URL rules enumerate subdomains of). They reach existing
+    // databases the way the v9 gate shipped youtube.com/discord.com —
+    // matched by category name, skipped when already present; renamed or
+    // deleted categories simply match nothing.
+    if version < 11 {
+        conn.execute_batch(
+            "INSERT INTO test_sites (category_id, rule_type, value, test_enabled)
+                SELECT c.id, 'domain_suffix', 'googlevideo.com', 1 FROM test_site_categories c
+                WHERE c.name = 'Google Video'
+                  AND NOT EXISTS (SELECT 1 FROM test_sites n
+                                  WHERE n.category_id = c.id
+                                    AND n.rule_type = 'domain_suffix' AND n.value = 'googlevideo.com');
+            INSERT INTO test_sites (category_id, rule_type, value, test_enabled)
+                SELECT c.id, 'domain_suffix', 'ytimg.com', 1 FROM test_site_categories c
+                WHERE c.name = 'YouTube'
+                  AND NOT EXISTS (SELECT 1 FROM test_sites n
+                                  WHERE n.category_id = c.id
+                                    AND n.rule_type = 'domain_suffix' AND n.value = 'ytimg.com');
+            INSERT INTO test_sites (category_id, rule_type, value, test_enabled)
+                SELECT c.id, 'domain_suffix', 'ggpht.com', 1 FROM test_site_categories c
+                WHERE c.name = 'YouTube'
+                  AND NOT EXISTS (SELECT 1 FROM test_sites n
+                                  WHERE n.category_id = c.id
+                                    AND n.rule_type = 'domain_suffix' AND n.value = 'ggpht.com');
+            INSERT INTO test_sites (category_id, rule_type, value, test_enabled)
+                SELECT c.id, 'domain_suffix', 't.me', 1 FROM test_site_categories c
+                WHERE c.name = 'Telegram'
+                  AND NOT EXISTS (SELECT 1 FROM test_sites n
+                                  WHERE n.category_id = c.id
+                                    AND n.rule_type = 'domain_suffix' AND n.value = 't.me');
+            INSERT INTO test_sites (category_id, rule_type, value, test_enabled)
+                SELECT c.id, 'domain_suffix', 'twimg.com', 1 FROM test_site_categories c
+                WHERE c.name = 'Social'
+                  AND NOT EXISTS (SELECT 1 FROM test_sites n
+                                  WHERE n.category_id = c.id
+                                    AND n.rule_type = 'domain_suffix' AND n.value = 'twimg.com');",
         )?;
     }
     conn.execute_batch(
@@ -399,7 +439,7 @@ mod tests {
             rules,
             vec![
                 ("Other".into(), "url".into(), 1),
-                ("YouTube".into(), "domain_suffix".into(), 1),
+                ("YouTube".into(), "domain_suffix".into(), 3),
                 ("YouTube".into(), "url".into(), 1),
             ]
         );
@@ -427,7 +467,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(suffixes, 1, "the whole-domain rule is not added twice");
+        assert_eq!(suffixes, 3, "the whole-domain rules are not added twice");
     }
 
     /// The v8 rework: legacy enabled/disabled categories become dpi/direct
@@ -591,5 +631,85 @@ mod tests {
             )
             .unwrap();
         assert_eq!(still, "manual");
+    }
+
+    /// The v11 gate: the default catalog's new whole-domain suffix rules
+    /// reach existing databases — inserted once per matching category name,
+    /// skipped when the rule already exists, user categories left alone.
+    #[test]
+    fn upgrades_v10_schema_in_place() {
+        let path = std::env::temp_dir().join(format!(
+            "megathrone-db-upgrade-v10-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE test_site_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    action TEXT NOT NULL DEFAULT 'dpi',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                );
+                CREATE TABLE test_sites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category_id INTEGER NOT NULL REFERENCES test_site_categories(id) ON DELETE CASCADE,
+                    rule_type TEXT NOT NULL DEFAULT 'domain_suffix',
+                    value TEXT NOT NULL,
+                    test_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE (category_id, rule_type, value)
+                );
+                INSERT INTO test_site_categories (name, position)
+                    VALUES ('Google Video', 0), ('YouTube', 1), ('Custom', 2);
+                INSERT INTO test_sites (category_id, rule_type, value) VALUES
+                    (1, 'url', 'https://rr1---sn-4axm-n8vs.googlevideo.com/'),
+                    (1, 'domain_suffix', 'googlevideo.com'),
+                    (2, 'url', 'https://i.ytimg.com/');",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 10).unwrap();
+        }
+
+        let conn = open(&path).unwrap();
+
+        let suffixes: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT c.name, s.value FROM test_sites s
+                     JOIN test_site_categories c ON c.id = s.category_id
+                     WHERE s.rule_type = 'domain_suffix'
+                     ORDER BY c.name, s.value",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        assert_eq!(
+            suffixes,
+            vec![
+                // Google Video already had the rule — not duplicated
+                ("Google Video".into(), "googlevideo.com".into()),
+                ("YouTube".into(), "ggpht.com".into()),
+                ("YouTube".into(), "ytimg.com".into()),
+            ]
+        );
+
+        // re-opening is a no-op (the user_version gate keeps rows intact)
+        drop(conn);
+        let conn = open(&path).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM test_sites WHERE rule_type = 'domain_suffix'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3, "the whole-domain rules are not added twice");
     }
 }

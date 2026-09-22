@@ -5,6 +5,7 @@ import { TbOutlineArrowLeft, TbOutlineCircleCheck, TbOutlineWorld, TbOutlineX } 
 
 import { Empty } from "@/components/common/Empty";
 import { TrafficDock } from "@/components/home/TrafficDock";
+import { useIsMobileUi } from "@/contexts/uiVariant";
 import { useConnection } from "@/hooks/data/useConnection";
 import { useUrlStats } from "@/hooks/data/useUrlStats";
 import type { UrlStatEntry } from "@/types";
@@ -67,15 +68,30 @@ const UrlStatRow: Component<{ entry: UrlStatEntry }> = (props) => {
 export const Stats: Component = () => {
   const stats = useUrlStats();
   const connection = useConnection();
+  const isMobile = useIsMobileUi();
   const connected = () => connection.snapshot()?.connected ?? false;
 
   const totalRequests = () => stats.entries().reduce((sum, entry) => sum + entry.requests, 0);
   const totalFailed = () => stats.entries().reduce((sum, entry) => sum + entry.failed, 0);
 
   return (
-    <div class="flex min-h-[calc(100vh-3.5rem)] w-full flex-col">
+    <div
+      classList={{
+        "flex w-full flex-col": true,
+        // mobile fills the window (the dock sits flush at its bottom);
+        // desktop flows inside the scrollable content zone
+        "min-h-[calc(100vh-3.5rem)]": isMobile(),
+        "min-h-0": !isMobile(),
+      }}
+    >
       <div class="container mx-auto max-w-2xl space-y-4 p-4">
-        <div class="sticky top-14 z-40 -mx-4 rounded-2xl border border-base-content/10 bg-base-100/60 px-4 py-2.5 shadow-sm backdrop-blur-md">
+        <div
+          classList={{
+            "sticky z-40 -mx-4 rounded-2xl border border-base-content/10 bg-base-100/60 px-4 py-2.5 shadow-sm backdrop-blur-md": true,
+            "top-14": isMobile(),
+            "top-0": !isMobile(),
+          }}
+        >
           <div class="flex items-center gap-3">
             <A
               href="/"

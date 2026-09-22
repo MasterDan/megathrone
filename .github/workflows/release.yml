@@ -103,7 +103,7 @@ jobs:
 
   build-arch:
     name: build (arch)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container:
       image: archlinux:latest
     steps:
@@ -148,6 +148,10 @@ jobs:
           RT="$GITHUB_WORKSPACE"
           REL="$RT/src-tauri/target/release"
           VER="${TAG#v}"
+          # makepkg rejects colons/slashes/hyphens/whitespace in pkgver — a
+          # workflow_dispatch run has a branch name here, so sanitize it
+          # (invalid characters collapse into dots)
+          VER="$(printf '%s' "$VER" | tr '/:[:space:]-' '.....')"
 
           printf '%s\n' \
             '[Desktop Entry]' \
@@ -198,10 +202,77 @@ jobs:
             megathrone-*-x86_64-arch.tar.gz
           if-no-files-found: error
 
+  build-android:
+    name: build (android)
+    runs-on: ubuntu-24.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      NDK_HOME: /usr/local/lib/android/sdk/ndk/29.0.13846066
+    steps:
+      - uses: actions/checkout@v5
+
+      # pnpm version comes from the packageManager field in package.json
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: install android sdk pieces
+        run: |
+          set -euxo pipefail
+          # the runner image ships the SDK but keeps sdkmanager off PATH
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "cmdline-tools missing from the runner image — installing"
+            curl -fsSL -o /tmp/cmdtools.zip \
+              "https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip"
+            mkdir -p "$ANDROID_HOME/cmdline-tools"
+            unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"
+            mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;29.0.13846066" > /dev/null
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      # build.rs fetches the sing-box android asset, compiles byedpi with the
+      # NDK clang and stages both as jniLibs; the gradle project signs the
+      # release APK with the committed keystore (gen/android/signing.properties)
+      - run: pnpm tauri android build --apk --target aarch64 --ci
+
+      - name: collect apk
+        run: |
+          mkdir -p artifacts
+          cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk \
+            "artifacts/megathrone-${{ github.event.release.tag_name || github.ref_name }}-android-arm64.apk"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-android
+          path: artifacts/*.apk
+          if-no-files-found: error
+
   publish:
     name: publish to release
-    runs-on: ubuntu-latest
-    needs: [build, build-arch]
+    runs-on: ubuntu-24.04
+    needs: [build, build-arch, build-android]
     if: github.event_name == 'release'
     steps:
       - uses: actions/download-artifact@v7
@@ -218,3 +289,4 @@ jobs:
             artifacts/**/*.AppImage
             artifacts/**/*.pkg.tar.zst
             artifacts/**/*.tar.gz
+            artifacts/**/*.apk

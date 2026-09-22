@@ -9,6 +9,9 @@ import type { EndpointUrlStatus, LatencyProgress } from "@/types";
 
 interface Props {
   endpointId: number;
+  /** Bumped by the modal after a successful retest — a source change makes
+   *  the resource re-read the (replaced) rows. */
+  refreshToken?: number;
 }
 
 /** Per-endpoint deep-probe details (proxy-routed category URLs), grouped by
@@ -17,8 +20,8 @@ interface Props {
  *  touching this endpoint re-read it. */
 export const UrlChecksList: Component<Props> = (props) => {
   const [checks, { refetch }] = createResource(
-    () => props.endpointId,
-    (endpointId) => invoke<EndpointUrlStatus[]>("profile_endpoint_urls", { itemId: endpointId }),
+    () => [props.endpointId, props.refreshToken ?? 0] as const,
+    ([endpointId]) => invoke<EndpointUrlStatus[]>("profile_endpoint_urls", { itemId: endpointId }),
   );
 
   onMount(() => {

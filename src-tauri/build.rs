@@ -27,6 +27,13 @@ fn main() {
     let target = env::var("TARGET").expect("cargo always sets TARGET");
     let sing_box_version = fetch_sing_box(&target);
     let byedpi_version = fetch_byedpi(&target);
+    if target.contains("android") {
+        // The Android build does not use externalBin sidecars (the CLI never
+        // bundles them into an APK): both binaries ship as fake `lib*.so`
+        // jniLibs — the only files Android extracts with the exec bit — and
+        // are exec'd by path from the APK's nativeLibraryDir at runtime.
+        stage_android_jnilibs(&target, &sing_box_version, &byedpi_version);
+    }
     if target.contains("-darwin") && env::var("PROFILE").as_deref() == Ok("release") {
         // `tauri build --target universal-apple-darwin` expects fat sidecars named
         // after the universal triple (`<name>-universal-apple-darwin`): the CLI
@@ -88,15 +95,28 @@ fn asset_for(target: &str, version: &str) -> PlatformAsset {
         "x86_64" => "amd64",
         "aarch64" => "arm64",
         "armv7" | "arm" => "armv7",
+        "i686" => "386",
         other => panic!("unsupported target arch `{other}` in triple `{target}`"),
     };
 
-    let (os, archive_ext, is_windows) = if parts.contains(&"darwin") {
-        ("darwin", "tar.gz", false)
+    // sing-box names its Android assets android-arm64/arm/amd64/386 (no
+    // glibc/musl split — they are static bionic builds)
+    let android_arch = match parts[0] {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "armv7" | "arm" => "arm",
+        "i686" => "386",
+        other => panic!("unsupported target arch `{other}` in triple `{target}`"),
+    };
+
+    let (os, archive_ext, is_windows, asset_arch) = if parts.contains(&"darwin") {
+        ("darwin", "tar.gz", false, arch)
+    } else if parts.contains(&"android") {
+        ("android", "tar.gz", false, android_arch)
     } else if parts.contains(&"linux") {
-        ("linux", "tar.gz", false)
+        ("linux", "tar.gz", false, arch)
     } else if parts.contains(&"windows") {
-        ("windows", "zip", true)
+        ("windows", "zip", true, arch)
     } else {
         panic!("unsupported target OS in triple `{target}`");
     };
@@ -109,7 +129,7 @@ fn asset_for(target: &str, version: &str) -> PlatformAsset {
     };
 
     PlatformAsset {
-        base_name: format!("sing-box-{version}-{os}-{arch}{abi_suffix}"),
+        base_name: format!("sing-box-{version}-{os}-{asset_arch}{abi_suffix}"),
         archive_ext,
         is_windows,
     }
@@ -189,6 +209,10 @@ fn byedpi_asset_for(target: &str, asset_version: &str) -> ByedpiAsset {
     let parts: Vec<&str> = target.split('-').collect();
     let os = if parts.contains(&"darwin") {
         "darwin"
+    } else if parts.contains(&"android") {
+        // no prebuilt bionic binaries: compiled from source with the NDK
+        // clang in the Source branch below
+        return ByedpiAsset::Source;
     } else if parts.contains(&"linux") {
         "linux"
     } else if parts.contains(&"windows") {
@@ -296,13 +320,20 @@ fn fetch_byedpi(target: &str) -> String {
                 .arg("1");
             run(tar, "tar (extract)");
 
-            // AppleClang builds for the host arch by default; pin the slice's
-            // arch so the x86_64 half of a universal build is a real
-            // cross-compile. Passed as a make argument (overrides any makefile
-            // assignment, unlike an env var).
-            let arch = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
+            // The compiler is picked per target: AppleClang builds for the
+            // host arch by default, so the slice's arch is pinned (passed as
+            // a make argument — overrides any makefile assignment, unlike an
+            // env var) to make the x86_64 half of a universal build a real
+            // cross-compile; Android compiles with the NDK's target-prefixed
+            // clang wrapper (bionic).
+            let cc = if target.contains("android") {
+                ndk_clang(target)
+            } else {
+                let arch = if target.starts_with("aarch64") { "arm64" } else { "x86_64" };
+                format!("cc -arch {arch}")
+            };
             let mut make = Command::new("make");
-            make.arg("-C").arg(&src_dir).arg(format!("CC=cc -arch {arch}"));
+            make.arg("-C").arg(&src_dir).arg(format!("CC={cc}"));
             run(make, "make (build ciadpi)");
 
             let binary = src_dir.join("ciadpi");
@@ -319,6 +350,106 @@ fn fetch_byedpi(target: &str) -> String {
 
     println!("byedpi {version} for {target}: ready ({})", dest.display());
     version
+}
+
+// ---------------------------------------------------------------------------
+// Android: stage the sidecars as fake jniLibs
+// ---------------------------------------------------------------------------
+
+/// Maps a cargo android triple to the Android ABI directory name.
+fn android_abi(target: &str) -> &'static str {
+    if target.starts_with("aarch64") {
+        "arm64-v8a"
+    } else if target.starts_with("armv7") {
+        "armeabi-v7a"
+    } else if target.starts_with("i686") {
+        "x86"
+    } else if target.starts_with("x86_64") {
+        "x86_64"
+    } else {
+        panic!("unsupported android triple `{target}`")
+    }
+}
+
+/// Copies the fetched sidecar binaries into the generated Gradle project as
+/// `lib*.so` jniLibs — the naming Android's installer requires to extract
+/// them into the APK's nativeLibraryDir with the exec bit (exec from the app
+/// data dir is forbidden on modern Android). The gradle `rust` plugin merges
+/// this directory when assembling every ABI flavor.
+fn stage_android_jnilibs(target: &str, sing_box_version: &str, byedpi_version: &str) {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo always sets CARGO_MANIFEST_DIR");
+    let bin_dir = Path::new(&manifest_dir).join("binaries");
+    let jni_dir = Path::new(&manifest_dir)
+        .join("gen/android/app/src/main/jniLibs")
+        .join(android_abi(target));
+    if !Path::new(&manifest_dir).join("gen/android").is_dir() {
+        panic!(
+            "the android gradle project is missing — run `pnpm tauri android init` \
+             before building for an android target"
+        );
+    }
+    fs::create_dir_all(&jni_dir).expect("failed to create the jniLibs directory");
+
+    let copies = [
+        (
+            bin_dir.join(format!("sing-box-{target}")),
+            jni_dir.join("libsingbox.so"),
+            "sing-box",
+            sing_box_version,
+        ),
+        (
+            bin_dir.join(format!("byedpi-{target}")),
+            jni_dir.join("libciadpi.so"),
+            "byedpi",
+            byedpi_version,
+        ),
+    ];
+    for (src, dest, name, version) in copies {
+        if !src.is_file() {
+            panic!("{name} {version} for {target}: expected binary at {}", src.display());
+        }
+        fs::copy(&src, &dest)
+            .unwrap_or_else(|e| panic!("failed to stage {} as {}: {e}", src.display(), dest.display()));
+    }
+    println!(
+        "android sidecars for {target}: staged into {} (libsingbox.so, libciadpi.so)",
+        jni_dir.display()
+    );
+}
+
+/// Locates the NDK's target-prefixed clang wrapper for the given android
+/// triple (min API 24, matching the gradle minSdk). NDK root comes from
+/// `NDK_HOME`/`ANDROID_NDK_HOME`/`ANDROID_NDK_ROOT` — the same variables the
+/// Tauri CLI uses.
+fn ndk_clang(target: &str) -> String {
+    let ndk = ["NDK_HOME", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"]
+        .iter()
+        .find_map(env::var_os)
+        .unwrap_or_else(|| {
+            panic!(
+                "building byedpi for android needs the NDK — set NDK_HOME (or \
+                 ANDROID_NDK_HOME/ANDROID_NDK_ROOT) to the NDK directory"
+            )
+        });
+    let prebuilt = Path::new(&ndk).join("toolchains/llvm/prebuilt");
+    let host = fs::read_dir(&prebuilt)
+        .unwrap_or_else(|e| panic!("failed to list {}: {e}", prebuilt.display()))
+        .flatten()
+        .find(|entry| entry.path().is_dir())
+        .map(|entry| entry.path())
+        .unwrap_or_else(|| panic!("no host toolchain directory inside {}", prebuilt.display()));
+    let prefix = match target.split('-').next().unwrap_or_default() {
+        "aarch64" => "aarch64-linux-android",
+        "armv7" => "armv7a-linux-androideabi",
+        "i686" => "i686-linux-android",
+        "x86_64" => "x86_64-linux-android",
+        other => panic!("unsupported android arch `{other}` in triple `{target}`"),
+    };
+    let clang = host.join("bin").join(format!("{prefix}24-clang"));
+    if !clang.is_file() {
+        panic!("NDK clang not found at {}", clang.display());
+    }
+    clang.to_string_lossy().to_string()
 }
 
 fn expected_sha256(repo: &str, asset_name: &str, version: &str) -> String {

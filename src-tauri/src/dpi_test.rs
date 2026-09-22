@@ -19,7 +19,6 @@ use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_shell::ShellExt;
 
 use crate::AppState;
 use crate::connection;
@@ -210,7 +209,7 @@ pub async fn dpi_test_strategies(app: AppHandle) -> Result<DpiTestSummary, Strin
             break;
         }
 
-        let result = test_strategy(&app, strategy.id, &strategy.args, &site_list).await;
+        let result = test_strategy(strategy.id, &strategy.args, &site_list).await;
 
         // a completed sweep is stored and announced even when the user asked
         // to stop mid-run; the top-of-loop check then ends the test
@@ -263,12 +262,11 @@ struct StrategyOutcome {
 }
 
 async fn test_strategy(
-    app: &AppHandle,
     strategy_id: i64,
     args: &str,
     site_list: &[(i64, String)],
 ) -> StrategyOutcome {
-    match run_tunnel_test(app, args, strategy_id, site_list).await {
+    match run_tunnel_test(args, strategy_id, site_list).await {
         Ok(probes) => StrategyOutcome { probes, error: None },
         Err(error) => StrategyOutcome { probes: Vec::new(), error: Some(error) },
     }
@@ -276,7 +274,6 @@ async fn test_strategy(
 
 /// Spawns ciadpi + its sing-box front, probes every site, tears both down.
 async fn run_tunnel_test(
-    app: &AppHandle,
     args: &str,
     strategy_id: i64,
     site_list: &[(i64, String)],
@@ -286,9 +283,7 @@ async fn run_tunnel_test(
 
     // the ciadpi sidecar with the strategy line (validation happened on
     // save; the app owns the listener flags)
-    let runner = app
-        .shell()
-        .sidecar("byedpi")
+    let runner = crate::process::sidecar("byedpi")
         .map_err(|error| format!("failed to resolve the byedpi sidecar: {error}"))?;
     let runner = runner.args(["-i", "127.0.0.1", "-p", &dpi_port.to_string()]);
     let runner = if args.trim().is_empty() {
@@ -314,13 +309,12 @@ async fn run_tunnel_test(
     }
 
     // a sing-box front with the tunnel as its only outbound + the clash API
-    let probed = front_and_probe(app, dpi_port, api_port, strategy_id, site_list).await;
+    let probed = front_and_probe(dpi_port, api_port, strategy_id, site_list).await;
     let _ = child.kill();
     probed
 }
 
 async fn front_and_probe(
-    app: &AppHandle,
     dpi_port: u16,
     api_port: u16,
     strategy_id: i64,
@@ -335,7 +329,7 @@ async fn front_and_probe(
         config_path: config_path.clone(),
         keep_config: false,
     };
-    let runner = latency::sidecar(app)?;
+    let runner = latency::sidecar()?;
     let (_events, child) = runner
         .args(["run", "-c", &config_arg])
         .spawn()

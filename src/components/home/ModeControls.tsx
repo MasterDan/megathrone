@@ -3,15 +3,21 @@ import { For } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { TbOutlineNetwork, TbOutlinePower, TbOutlineWorld } from "solid-icons/tb";
 
+import { BUILD_UI_VARIANT } from "@/platform";
 import type { ProxyMode } from "@/types";
 
 /** One of three modes is active at a time — a segmented control rather than
  *  independent toggles, since TUN is a superset of System Proxy. Styled
- *  after the floating top dock (AppLayout). */
+ *  after the floating top dock (AppLayout).
+ *
+ *  TUN needs a VpnService tunnel on Android — the mobile build hides it
+ *  (the backend refuses it with an explanatory error either way). */
 const MODES: ReadonlyArray<{ value: ProxyMode; label: string; icon: Component<{ class?: string }> }> = [
   { value: "off", label: "Off", icon: TbOutlinePower },
   { value: "system-proxy", label: "System Proxy", icon: TbOutlineWorld },
-  { value: "tun", label: "TUN", icon: TbOutlineNetwork },
+  ...(BUILD_UI_VARIANT === "desktop"
+    ? [{ value: "tun" as const, label: "TUN", icon: TbOutlineNetwork }]
+    : []),
 ];
 
 export const ModeControls: Component<{

@@ -9,6 +9,7 @@ import {
   type VirtualWindowGridApi,
 } from "@/components/common/VirtualWindowGrid";
 import { useProfileItems } from "@/hooks/data/useProfileItems";
+import { useScrollZone } from "@/contexts/scrollZone";
 import { LATENCY_PROGRESS_EVENT, PROFILES_CHANGED_EVENT } from "@/types";
 import type { EndpointItem, LatencyProgress, ProfilesChangedPayload } from "@/types";
 import { ENDPOINT_CARD_HEIGHT, EndpointCard } from "./EndpointCard";
@@ -62,6 +63,14 @@ export const ProfileItems: Component<Props> = (props) => {
     applyLatency,
     reset: reloadItems,
   } = useProfileItems(() => props.profileId, () => props.total);
+
+  /** The scrollable element driving the virtual grid — the enclosing
+   *  desktop content zone (DesktopPage's provider); null on mobile, where
+   *  the document window scrolls. Read here (not in the page component):
+   *  the zone is provided by the page's own DesktopPage, which is a
+   *  *descendant* of the page component — an ancestor-context read there
+   *  would always miss it. */
+  const zone = useScrollZone();
   const [detailItem, setDetailItem] = createSignal<EndpointItem | null>(null);
 
   /** The open deep-probe details modal lives here, above the grid: a card
@@ -252,6 +261,7 @@ export const ProfileItems: Component<Props> = (props) => {
         breakpoints={GRID_BREAKPOINTS}
         onRangeChange={handleRangeChange}
         onApi={(api) => (gridApi = api)}
+        scroller={zone}
       >
         {renderCell}
       </VirtualWindowGrid>
@@ -279,6 +289,7 @@ export const ProfileItems: Component<Props> = (props) => {
       <UrlChecksModal
         item={urlChecks()?.item ?? null}
         error={urlChecks()?.error ?? null}
+        onResult={(failed) => setUrlChecks((prev) => (prev ? { ...prev, error: failed } : prev))}
         opened={() => urlChecks() !== null}
         setOpened={(open) => {
           if (!open) {

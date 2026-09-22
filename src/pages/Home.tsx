@@ -14,6 +14,7 @@ import { useProfiles } from "@/hooks/data/useProfiles";
 import { useProfileSelection } from "@/hooks/data/useProfileSelection";
 import { SELECTION_MODE_LABELS } from "@/types";
 import type { ProxyMode } from "@/types";
+import { BUILD_UI_VARIANT } from "@/platform";
 
 const SELECTED_PROFILE_KEY = "megathrone.selectedProfileId";
 const SELECTED_MODE_KEY = "megathrone.proxyMode";
@@ -26,7 +27,10 @@ const readStoredProfileId = () => {
 
 const readStoredMode = (): ProxyMode => {
   const stored = localStorage.getItem(SELECTED_MODE_KEY);
-  return stored === "system-proxy" || stored === "tun" ? stored : "off";
+  if (stored !== "system-proxy" && stored !== "tun") return "off";
+  // a TUN selection carried over from the desktop variant cannot run on
+  // mobile — degrade to the nearest supported mode instead of failing
+  return stored === "tun" && BUILD_UI_VARIANT === "mobile" ? "system-proxy" : stored;
 };
 
 export const Home: Component = () => {
