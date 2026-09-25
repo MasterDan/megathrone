@@ -1,7 +1,6 @@
-//! DPI strategy testing — the Test button on the Settings → DPI tab.
-//!
-//! For every stored strategy a throwaway ciadpi instance is spawned on a
-//! random local port with that strategy's argument line, fronted by a
+//! The per-strategy test runner — the Test button on the Settings → DPI
+//! tab. For every stored strategy a throwaway ciadpi instance is spawned
+//! on a random local port with that strategy's argument line, fronted by a
 //! throwaway sing-box instance (a single socks outbound pointing at ciadpi,
 //! clash API enabled). Each site of every *dpi*-routed URL category
 //! (Settings → Routing) is then fetched through the tunnel via the clash
@@ -11,15 +10,15 @@
 //! (adopting a running test after remount) and `dpi_cancel_test` (checked
 //! between strategies).
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
+use super::registry::{TestGuard, advance_test, begin_test};
+use super::storage::store_strategy_results;
 use crate::AppState;
 use crate::connection;
 use crate::dpi;
@@ -38,63 +37,6 @@ pub const DPI_TEST_FINISHED_EVENT: &str = "dpi-test-finished";
 /// The outbound tag `build_test_config` assigns to the first (only)
 /// outbound — the socks tunnel to ciadpi.
 const TUNNEL_TAG: &str = "mt-0";
-
-// ---------------------------------------------------------------------------
-// Test registry (one running test per app)
-// ---------------------------------------------------------------------------
-
-struct TestRun {
-    done: usize,
-    total: usize,
-    cancel: Arc<AtomicBool>,
-}
-
-static TEST: LazyLock<Mutex<Option<TestRun>>> = LazyLock::new(|| Mutex::new(None));
-
-fn lock_test() -> Result<MutexGuard<'static, Option<TestRun>>, String> {
-    TEST.lock().map_err(|_| "test registry poisoned".to_string())
-}
-
-/// Removes the registry entry when the test ends for any reason, including
-/// early returns and panics.
-struct TestGuard;
-
-impl Drop for TestGuard {
-    fn drop(&mut self) {
-        if let Ok(mut test) = TEST.lock() {
-            *test = None;
-        }
-    }
-}
-
-fn begin_test(total: usize) -> Result<Arc<AtomicBool>, String> {
-    let mut test = lock_test()?;
-    if test.is_some() {
-        return Err("a DPI strategy test is already running".to_string());
-    }
-    let cancel = Arc::new(AtomicBool::new(false));
-    *test = Some(TestRun { done: 0, total, cancel: cancel.clone() });
-    Ok(cancel)
-}
-
-fn advance_test(done: usize) {
-    if let Ok(mut test) = TEST.lock() {
-        if let Some(run) = test.as_mut() {
-            run.done = done;
-        }
-    }
-}
-
-fn request_cancel() -> Result<bool, String> {
-    let test = lock_test()?;
-    match test.as_ref() {
-        Some(run) => {
-            run.cancel.store(true, Ordering::Relaxed);
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Payloads & commands
@@ -120,53 +62,12 @@ pub struct DpiTestProgress {
     pub results: Vec<DpiTestResult>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DpiTestStatus {
-    pub done: usize,
-    pub total: usize,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DpiTestSummary {
     /// strategies actually tested (a cancelled run reports less)
     pub done: usize,
     pub total: usize,
-}
-
-/// Snapshot of the running test; `None` means no test is running.
-#[tauri::command]
-pub fn dpi_test_status() -> Result<Option<DpiTestStatus>, String> {
-    let test = lock_test()?;
-    Ok(test
-        .as_ref()
-        .map(|run| DpiTestStatus { done: run.done, total: run.total }))
-}
-
-/// Stops a running test after the current strategy; idempotent.
-#[tauri::command]
-pub fn dpi_cancel_test() -> Result<bool, String> {
-    request_cancel()
-}
-
-/// One strategy's per-site outcomes, grouped by category (details popover
-/// on the Settings → DPI tab); `ok` is null for sites never probed. Only
-/// dpi-routed categories are listed.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DpiSiteStatus {
-    pub category_id: i64,
-    pub category: String,
-    pub url_id: i64,
-    pub url: String,
-    pub ok: Option<bool>,
-}
-
-#[tauri::command]
-pub fn dpi_strategy_urls(state: State<AppState>, strategy_id: i64) -> Result<Vec<DpiSiteStatus>, String> {
-    let conn = lock_db(&state)?;
-    strategy_url_statuses(&conn, strategy_id)
 }
 
 /// Runs every stored strategy against every configured site, one ciadpi +
@@ -375,126 +276,9 @@ fn socks_outbound(dpi_port: u16) -> Value {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-/// Persists one strategy's full site sweep in a single lock (upserts — a
-/// re-test overwrites the previous sweep). A strategy deleted while its
-/// test was running is simply skipped.
-fn store_strategy_results(conn: &Connection, strategy_id: i64, results: &[(i64, bool)]) -> Result<(), String> {
-    let exists: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM dpi_strategies WHERE id = ?1)",
-            params![strategy_id],
-            |row| row.get(0),
-        )
-        .map_err(db_err)?;
-    if !exists {
-        return Ok(());
-    }
-    let mut stmt = conn
-        .prepare(
-            "INSERT INTO dpi_url_results (strategy_id, url_id, ok, tested_at)
-             VALUES (?1, ?2, ?3, datetime('now'))
-             ON CONFLICT(strategy_id, url_id) DO UPDATE SET
-                 ok = excluded.ok,
-                 tested_at = excluded.tested_at",
-        )
-        .map_err(db_err)?;
-    for (url_id, ok) in results {
-        stmt.execute(params![strategy_id, url_id, *ok as i64]).map_err(db_err)?;
-    }
-    Ok(())
-}
-
-fn strategy_url_statuses(conn: &Connection, strategy_id: i64) -> Result<Vec<DpiSiteStatus>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.id, c.name, s.id, s.rule_type, s.value, r.ok
-             FROM test_site_categories c
-             JOIN test_sites s ON s.category_id = c.id
-             LEFT JOIN dpi_url_results r
-                    ON r.url_id = s.id AND r.strategy_id = ?1
-             WHERE c.action = 'dpi'
-             ORDER BY c.position, c.id, s.id",
-        )
-        .map_err(db_err)?;
-    let rows = stmt
-        .query_map(params![strategy_id], |row| {
-            let rule_type: String = row.get(3)?;
-            let value: String = row.get(4)?;
-            Ok(DpiSiteStatus {
-                category_id: row.get(0)?,
-                category: row.get(1)?,
-                url_id: row.get(2)?,
-                // what the test actually fetched (keyword/regex rules are
-                // listed with their raw pattern — they never get probed)
-                url: sites::probe_url(&rule_type, &value).unwrap_or(value),
-                ok: row.get::<_, Option<i64>>(5)?.map(|value| value != 0),
-            })
-        })
-        .map_err(db_err)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(db_err)?;
-    Ok(rows)
-}
-
-fn lock_db<'a>(state: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
-    state.db.lock().map_err(|_| "database lock poisoned".to_string())
-}
-
-fn db_err(error: rusqlite::Error) -> String {
-    format!("database error: {error}")
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-
-    fn test_db() -> Connection {
-        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "megathrone-dpitest-{}-{id}.db",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        crate::db::open(&path, &crate::db::Migrations::embedded()).expect("test db should open")
-    }
-
-    fn seed_sites(conn: &Connection) -> (i64, i64, i64, i64) {
-        conn.execute(
-            "INSERT INTO test_site_categories (name, position, action)
-             VALUES ('Cat A', 0, 'dpi'), ('Cat B', 1, 'dpi'), ('Cat P', 2, 'proxy')",
-            [],
-        )
-        .expect("seed categories");
-        conn.execute(
-            "INSERT INTO test_sites (category_id, rule_type, value) VALUES
-                (1, 'url', 'https://a1.example/'), (1, 'url', 'https://a2.example/'),
-                (2, 'url', 'https://b1.example/'), (3, 'url', 'https://p1.example/')",
-            [],
-        )
-        .expect("seed sites");
-        conn.execute(
-            "INSERT INTO dpi_strategies (name, args) VALUES ('S', '-s2')",
-            [],
-        )
-        .expect("seed strategy");
-        let strategy_id = conn.last_insert_rowid();
-        let url_ids: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT id FROM test_sites ORDER BY id").unwrap();
-            stmt.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
-        };
-        (strategy_id, url_ids[0], url_ids[2], url_ids[3])
-    }
 
     #[test]
     fn socks_outbound_points_at_ciadpi() {
@@ -509,56 +293,5 @@ mod tests {
         assert_eq!(config["outbounds"][0]["tag"], TUNNEL_TAG);
         assert_eq!(config["outbounds"][0]["server_port"], 41234);
         assert_eq!(config["outbounds"][1]["type"], "direct");
-    }
-
-    #[test]
-    fn store_results_upserts_and_reports_by_category() {
-        let conn = test_db();
-        let (strategy_id, first, third, proxy_site) = seed_sites(&conn);
-
-        store_strategy_results(&conn, strategy_id, &[(first, true), (third, false)]).expect("store");
-        // a re-test overwrites the same pairs
-        store_strategy_results(&conn, strategy_id, &[(first, false), (third, true)]).expect("store");
-
-        let statuses = strategy_url_statuses(&conn, strategy_id).expect("statuses");
-        assert_eq!(statuses.len(), 3, "only dpi-routed category sites are listed");
-        assert_eq!(statuses[0].category, "Cat A");
-        assert_eq!(statuses[2].category, "Cat B");
-        assert!(!statuses.iter().any(|status| status.url_id == proxy_site));
-        let by_url: HashMap<i64, Option<bool>> =
-            statuses.iter().map(|status| (status.url_id, status.ok)).collect();
-        assert_eq!(by_url.get(&first), Some(&Some(false)), "latest sweep wins");
-        assert_eq!(by_url.get(&third), Some(&Some(true)));
-        assert_eq!(by_url[&(first + 1)], None, "unprobed site reports null");
-
-        // strategy deletion cascades the results away
-        conn.execute("DELETE FROM dpi_strategies WHERE id = ?1", params![strategy_id]).unwrap();
-        let remaining: i64 = conn
-            .query_row("SELECT COUNT(*) FROM dpi_url_results", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(remaining, 0);
-    }
-
-    #[test]
-    fn registry_tracks_and_cancels() {
-        let cancel = begin_test(10).expect("begin test");
-        assert!(begin_test(20).is_err(), "a second test must be rejected");
-
-        advance_test(4);
-        assert_eq!(dpi_test_status().expect("status"), Some(DpiTestStatus { done: 4, total: 10 }));
-
-        assert!(!cancel.load(Ordering::Relaxed));
-        assert!(request_cancel().expect("cancel"));
-        assert!(cancel.load(Ordering::Relaxed));
-        assert!(request_cancel().expect("cancel"), "cancel is idempotent");
-
-        drop(TestGuard);
-        assert_eq!(dpi_test_status().expect("status"), None);
-        assert!(!request_cancel().expect("cancel"), "no test, nothing to cancel");
-
-        // the slot is free again after a finished test
-        begin_test(1).expect("begin again");
-        drop(TestGuard);
-        assert_eq!(dpi_test_status().expect("status"), None);
     }
 }
