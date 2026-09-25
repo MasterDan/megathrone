@@ -205,7 +205,9 @@ pub fn profile_import_from_text(
 pub async fn profile_update(app: AppHandle, profile_id: i64) -> Result<ProfileSummary, String> {
     let outcome = {
         let app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || update_profile_flow(&app, profile_id))
+        tauri::async_runtime::spawn_blocking(move || {
+            update_profile_flow(&app, profile_id, UpdateTrigger::Manual)
+        })
             .await
             .map_err(|error| format!("update task failed: {error}"))?
     }?;
@@ -466,6 +468,20 @@ pub struct UpdateOutcome {
     pub removed: usize,
 }
 
+/// After this many consecutive failed *scheduled* updates the scheduler
+/// ignores the profile's auto-update schedule; any successful update
+/// (the manual Update button included) resets the streak.
+pub const MAX_AUTO_UPDATE_FAILURES: i64 = 3;
+
+/// Who asked for `update_profile_flow` to run: only scheduled attempts
+/// grow the consecutive-failure counter, manual attempts never do (but a
+/// successful one clears it via `apply_update`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateTrigger {
+    Manual,
+    Scheduler,
+}
+
 /// Full update cycle usable from commands and the background scheduler:
 /// reads the source, fetches fresh content (NO db lock held during io),
 /// then applies it as a diff in a short transaction. Announces itself via
@@ -473,7 +489,11 @@ pub struct UpdateOutcome {
 /// end (successfully or not), so the UI can spin the Update button no matter
 /// whether the update was clicked or scheduled; every phase also goes out
 /// as a global `profile-update` notice (started / success / error).
-pub fn update_profile_flow(app: &AppHandle, profile_id: i64) -> Result<UpdateOutcome, String> {
+pub fn update_profile_flow(
+    app: &AppHandle,
+    profile_id: i64,
+    trigger: UpdateTrigger,
+) -> Result<UpdateOutcome, String> {
     if let Ok(mut updates) = lock_running_updates() {
         updates.insert(profile_id);
     }
@@ -490,7 +510,27 @@ pub fn update_profile_flow(app: &AppHandle, profile_id: i64) -> Result<UpdateOut
             Some(describe_diff(outcome)),
         ),
         Err(error) => {
-            emit_update_notice(app, profile_id, UPDATE_NOTICE_FAILED, Some(error.clone()));
+            let message = if trigger == UpdateTrigger::Scheduler {
+                let failures = app
+                    .try_state::<AppState>()
+                    .and_then(|state| {
+                        state.db.lock().ok().and_then(|conn| {
+                            bump_auto_update_failures(&conn, profile_id).ok()
+                        })
+                    })
+                    .unwrap_or(0);
+                if failures >= MAX_AUTO_UPDATE_FAILURES {
+                    format!(
+                        "{error} — auto-update paused after {failures} failed attempts; \
+                         a successful manual update resumes it"
+                    )
+                } else {
+                    error.clone()
+                }
+            } else {
+                error.clone()
+            };
+            emit_update_notice(app, profile_id, UPDATE_NOTICE_FAILED, Some(message));
         }
     }
     result
@@ -674,7 +714,8 @@ fn apply_update(conn: &mut Connection, profile_id: i64, content: &str) -> Result
         .execute(
             "UPDATE profiles
              SET item_count = ?2, skipped_count = ?3,
-                 last_fetched_at = datetime('now'), updated_at = datetime('now')
+                 last_fetched_at = datetime('now'), updated_at = datetime('now'),
+                 auto_update_failures = 0
              WHERE id = ?1",
             params![profile_id, parsed.endpoints.len() as i64, parsed.skipped as i64],
         )
@@ -801,16 +842,35 @@ fn set_auto_update(conn: &Connection, profile_id: i64, minutes: Option<i64>) -> 
     Ok(())
 }
 
+/// Counts one more failed scheduled update and returns the new streak.
+/// `due_profiles`/`next_wake_seconds` ignore the profile once the streak
+/// reaches `MAX_AUTO_UPDATE_FAILURES`; `apply_update` clears it.
+fn bump_auto_update_failures(conn: &Connection, profile_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "UPDATE profiles SET auto_update_failures = auto_update_failures + 1
+         WHERE id = ?1 RETURNING auto_update_failures",
+        params![profile_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => format!("profile {profile_id} not found"),
+        other => db_err(other),
+    })
+}
+
 /// Profiles whose auto-update interval has elapsed since the last fetch.
+/// Profiles paused by too many consecutive failed scheduled updates are
+/// skipped — a successful update (the manual button included) unpauses.
 pub fn due_profiles(conn: &Connection) -> Result<Vec<i64>, String> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id FROM profiles
              WHERE auto_update_minutes IS NOT NULL
                AND last_fetched_at IS NOT NULL
+               AND auto_update_failures < {MAX_AUTO_UPDATE_FAILURES}
                AND (julianday('now') - julianday(last_fetched_at)) * 1440.0 >= auto_update_minutes
-             ORDER BY id",
-        )
+             ORDER BY id"
+        ))
         .map_err(db_err)?;
     let ids = stmt
         .query_map([], |row| row.get(0))
@@ -821,16 +881,21 @@ pub fn due_profiles(conn: &Connection) -> Result<Vec<i64>, String> {
 }
 
 /// Seconds until the next scheduled auto-update (can be negative when due;
-/// the scheduler clamps). None when nothing is scheduled.
+/// the scheduler clamps). None when nothing is scheduled. Paused profiles
+/// must not hold the wake target at "overdue" forever, so they are excluded
+/// here too.
 pub fn next_wake_seconds(conn: &Connection) -> Result<Option<f64>, String> {
     conn.query_row(
-        "SELECT MIN((julianday(last_fetched_at, '+' || auto_update_minutes || ' minutes')
-                     - julianday('now')) * 86400.0)
-         FROM profiles
-         WHERE auto_update_minutes IS NOT NULL
-           AND last_fetched_at IS NOT NULL
-           AND ((source_url IS NOT NULL AND source_url != '')
-                OR (source_path IS NOT NULL AND source_path != ''))",
+        &format!(
+            "SELECT MIN((julianday(last_fetched_at, '+' || auto_update_minutes || ' minutes')
+                         - julianday('now')) * 86400.0)
+             FROM profiles
+             WHERE auto_update_minutes IS NOT NULL
+               AND last_fetched_at IS NOT NULL
+               AND auto_update_failures < {MAX_AUTO_UPDATE_FAILURES}
+               AND ((source_url IS NOT NULL AND source_url != '')
+                    OR (source_path IS NOT NULL AND source_path != ''))"
+        ),
         [],
         |row| row.get::<_, Option<f64>>(0),
     )
@@ -2006,6 +2071,60 @@ trojan://pw@9.9.9.9:443?security=tls#Third";
         // sourceless profiles cannot enable auto-update
         let text_only = import_profile(&mut conn, "Text".into(), None, None, SAMPLE).expect("import");
         assert!(set_auto_update(&conn, text_only.id, Some(60)).is_err());
+    }
+
+    #[test]
+    fn auto_update_pauses_after_consecutive_failures() {
+        let mut conn = test_db();
+        let summary = import_profile(
+            &mut conn,
+            "Auto".into(),
+            Some("https://example.com/sub".into()),
+            None,
+            SAMPLE,
+        )
+        .expect("import");
+        set_auto_update(&conn, summary.id, Some(30)).expect("enable");
+        conn.execute(
+            "UPDATE profiles SET last_fetched_at = datetime('now', '-1 hour') WHERE id = ?1",
+            params![summary.id],
+        )
+        .map_err(db_err)
+        .unwrap();
+
+        // two failed scheduled updates: the profile stays scheduled
+        assert_eq!(bump_auto_update_failures(&conn, summary.id).expect("bump"), 1);
+        assert_eq!(bump_auto_update_failures(&conn, summary.id).expect("bump"), 2);
+        assert_eq!(due_profiles(&conn).expect("due"), vec![summary.id]);
+        assert!(next_wake_seconds(&conn).expect("next").is_some());
+
+        // the third consecutive failure pauses the schedule: the scheduler
+        // neither runs the profile nor holds its wake target overdue
+        assert_eq!(bump_auto_update_failures(&conn, summary.id).expect("bump"), 3);
+        assert!(due_profiles(&conn).expect("due").is_empty());
+        assert!(next_wake_seconds(&conn).expect("next").is_none());
+
+        // a failed bump of a missing profile is an error, not a pause
+        assert!(bump_auto_update_failures(&conn, 999).is_err());
+
+        // a successful update (the manual Update button runs the same
+        // apply path) clears the streak and unpauses the schedule
+        apply_update(&mut conn, summary.id, SAMPLE).expect("update");
+        let failures: (i64,) = conn
+            .query_row(
+                "SELECT auto_update_failures FROM profiles WHERE id = ?1",
+                params![summary.id],
+                |row| Ok((row.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(failures.0, 0);
+        conn.execute(
+            "UPDATE profiles SET last_fetched_at = datetime('now', '-1 hour') WHERE id = ?1",
+            params![summary.id],
+        )
+        .map_err(db_err)
+        .unwrap();
+        assert_eq!(due_profiles(&conn).expect("due"), vec![summary.id]);
     }
 
     #[test]

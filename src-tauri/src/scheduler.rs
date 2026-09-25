@@ -64,7 +64,7 @@ fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
 
     let mut failures = 0;
     for profile_id in due {
-        match profiles::update_profile_flow(app, profile_id) {
+        match profiles::update_profile_flow(app, profile_id, profiles::UpdateTrigger::Scheduler) {
             Ok(outcome) => {
                 // the endpoint set changed under a live session's feet —
                 // rebuild it silently (the manual Update button reports
