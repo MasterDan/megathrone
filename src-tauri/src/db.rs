@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS profiles (
     updated_at           TEXT    NOT NULL DEFAULT (datetime('now')),
     source_path          TEXT,
     auto_update_minutes  INTEGER,
-    last_fetched_at      TEXT
+    last_fetched_at      TEXT,
+    -- consecutive failed scheduled updates; at the limit the scheduler
+    -- ignores the profile until any update succeeds again
+    auto_update_failures INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS endpoints (
@@ -202,6 +205,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(conn, "profiles", "source_path", "TEXT")?;
     add_column_if_missing(conn, "profiles", "auto_update_minutes", "INTEGER")?;
     add_column_if_missing(conn, "profiles", "last_fetched_at", "TEXT")?;
+    add_column_if_missing(
+        conn,
+        "profiles",
+        "auto_update_failures",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     // v3: the endpoint picked in the UI, remembered by its raw link so the
     // choice survives content updates (endpoint ids are not stable across them)
     add_column_if_missing(conn, "profiles", "selected_endpoint_key", "TEXT")?;

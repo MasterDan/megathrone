@@ -2856,6 +2856,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn parse_proxy_state_handles_enabled_and_disabled() {
         let disabled = "\
 Enabled: No
