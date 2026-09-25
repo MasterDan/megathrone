@@ -91,7 +91,17 @@ pub fn run() {
             move |app| {
                 let data_dir = app.path().app_data_dir()?;
                 std::fs::create_dir_all(&data_dir)?;
-                let connection = db::open(&data_dir.join("megathrone.db"))
+                // the SQL migrations bundled as app resources (desktop); on
+                // Android the resource dir is the virtual asset:// URI Rust
+                // cannot read, so the compile-time copies serve instead
+                let migrations = app
+                    .path()
+                    .resolve("migrations", tauri::path::BaseDirectory::Resource)
+                    .ok()
+                    .and_then(|dir| db::Migrations::from_dir(&dir).ok())
+                    .filter(|migrations| !migrations.is_empty())
+                    .unwrap_or_else(db::Migrations::embedded);
+                let connection = db::open(&data_dir.join("megathrone.db"), &migrations)
                     .map_err(|e| format!("failed to initialize the profiles database: {e}"))?;
                 // first run only: the bundled strategy presets and the
                 // default test-site catalog (never into a user-touched table)

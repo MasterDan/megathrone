@@ -1537,7 +1537,7 @@ mod tests {
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("megathrone-test-{}-{id}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
-        crate::db::open(&path).expect("test db should open")
+        crate::db::open(&path, &crate::db::Migrations::embedded()).expect("test db should open")
     }
 
     const SAMPLE: &str = "\
