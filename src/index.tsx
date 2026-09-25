@@ -18,9 +18,11 @@ import { ProfileEndpoints } from "./pages/profiles/ProfileEndpoints";
 import { DesktopHome } from "@/pages/desktop/DesktopHome";
 import { DesktopCategoryPage } from "@/pages/desktop/DesktopCategoryPage";
 import { DesktopDpi } from "@/pages/desktop/DesktopDpi";
+import { DesktopDiscoveryPage } from "@/pages/desktop/DesktopDiscoveryPage";
 import { DesktopProfileEndpoints, DesktopProfiles } from "@/pages/desktop/DesktopProfiles";
 import { DesktopSettings } from "@/pages/desktop/DesktopSettings";
 import { DesktopStats } from "@/pages/desktop/DesktopStats";
+import { DiscoveryPage } from "@/pages/discovery/DiscoveryPage";
 
 import "./index.css";
 
@@ -51,6 +53,10 @@ render(
         <Route
           path="/settings/categories/:id"
           component={MOBILE_UI ? CategoryPage : DesktopCategoryPage}
+        />
+        <Route
+          path="/discovery"
+          component={MOBILE_UI ? DiscoveryPage : DesktopDiscoveryPage}
         />
         <Route path="/dpi" component={DesktopDpi} />
       </Router>

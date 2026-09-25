@@ -5,14 +5,13 @@ import { Dynamic } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import {
   TbOutlineAlertTriangle,
-  TbOutlineInfoCircle,
   TbOutlinePlus,
+  TbOutlineRadar,
   TbOutlineSettings,
   TbOutlineShieldLock,
   TbOutlineX,
 } from "solid-icons/tb";
 
-import { AboutModal } from "@/components/layout/AboutModal";
 import { CrownMark } from "@/components/common/CrownMark";
 import { ModeControls } from "@/components/home/ModeControls";
 import { AddProfileModal } from "@/components/profiles/AddProfileModal";
@@ -48,7 +47,6 @@ export const DesktopSidebar: Component = () => {
   const connection = useConnection();
 
   const [adding, setAdding] = createSignal(false);
-  const [aboutOpen, setAboutOpen] = createSignal(false);
 
   const connected = () => connection.snapshot()?.connected ?? false;
   const isActive = (href: string) => location.pathname.startsWith(href);
@@ -324,16 +322,15 @@ export const DesktopSidebar: Component = () => {
         <button
           type="button"
           class="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-base-content/10 text-base-content/70 transition-colors hover:bg-base-content/20 hover:text-base-content"
-          title="About"
-          aria-label="About"
-          onClick={() => setAboutOpen(true)}
+          title="Discovery"
+          aria-label="Discovery"
+          onClick={() => navigate("/discovery")}
         >
-          <TbOutlineInfoCircle size={16} />
+          <TbOutlineRadar size={18} />
         </button>
       </div>
 
       <AddProfileModal opened={adding} setOpened={setAdding} onDone={() => void refetch()} />
-      <AboutModal opened={aboutOpen} setOpened={setAboutOpen} />
     </aside>
   );
 };

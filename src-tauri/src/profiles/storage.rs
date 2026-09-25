@@ -25,7 +25,7 @@ pub(super) fn list_profiles(conn: &Connection) -> Result<Vec<ProfileSummary>, St
     Ok(rows)
 }
 
-pub(super) fn import_profile(
+pub(crate) fn import_profile(
     conn: &mut Connection,
     name: String,
     source_url: Option<String>,
@@ -94,7 +94,7 @@ pub(super) fn rename_profile(conn: &Connection, profile_id: i64, new_name: &str)
     Ok(())
 }
 
-pub(super) fn delete_profile(conn: &Connection, profile_id: i64) -> Result<(), String> {
+pub(crate) fn delete_profile(conn: &Connection, profile_id: i64) -> Result<(), String> {
     // endpoints are removed by the FK cascade
     conn.execute("DELETE FROM profiles WHERE id = ?1", params![profile_id])
         .map_err(db_err)?;

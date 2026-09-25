@@ -229,7 +229,7 @@ pub(super) fn load_source(conn: &Connection, profile_id: i64) -> Result<Source, 
 /// (tag, order) follow the fresh content. Parsing is deterministic, so a
 /// surviving link's re-parsed outbound is rewritten as a no-op (it only
 /// differs when the parser itself changed between app versions).
-pub(super) fn apply_update(conn: &mut Connection, profile_id: i64, content: &str) -> Result<UpdateOutcome, String> {
+pub(crate) fn apply_update(conn: &mut Connection, profile_id: i64, content: &str) -> Result<UpdateOutcome, String> {
     let parsed: ParsedProfile = parser::parse_subscription(content);
     if parsed.endpoints.is_empty() {
         return Err("no supported endpoints found in the updated content".into());

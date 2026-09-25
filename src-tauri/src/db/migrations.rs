@@ -48,6 +48,11 @@ const EMBEDDED_MIGRATIONS: &[(i64, &str, &str)] = &[
         "catalog_domain_suffixes",
         include_str!("../../migrations/v11.catalog_domain_suffixes.sql"),
     ),
+    (
+        12,
+        "discovery_sources",
+        include_str!("../../migrations/v12.discovery_sources.sql"),
+    ),
 ];
 
 impl Migrations {
@@ -105,6 +110,14 @@ impl Migrations {
         self.entries.is_empty()
     }
 
+    /// The highest version in this set — a resource-dir copy whose latest
+    /// trails the embedded chain is stale (the dev CLI does not always
+    /// refresh already-copied resources) and must not pin the schema below
+    /// what the running binary knows.
+    pub fn latest_version(&self) -> i64 {
+        self.entries.last().map(|m| m.version).unwrap_or(0)
+    }
+
     /// The entry with exactly this version (the heal wants the v1 baseline).
     pub(super) fn find(&self, version: i64) -> Option<&Migration> {
         self.entries.iter().find(|m| m.version == version)
@@ -120,10 +133,7 @@ impl Migrations {
 /// database carries in `PRAGMA user_version`.
 #[cfg(test)]
 pub(super) fn latest_version() -> i64 {
-    EMBEDDED_MIGRATIONS
-        .last()
-        .map(|&(version, ..)| version)
-        .unwrap_or(0)
+    Migrations::embedded().latest_version()
 }
 
 /// `("v8.category_actions.sql",) -> Some((8, "category_actions"))`
@@ -161,6 +171,7 @@ mod tests {
             "app_settings",
             "test_site_categories",
             "test_sites",
+            "discovery_sources",
             "endpoint_url_results",
             "dpi_url_results",
         ] {

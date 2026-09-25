@@ -11,5 +11,5 @@ mod utils;
 #[cfg(test)]
 mod parser_tests;
 
-pub use subscription::{parse_subscription, ParsedProfile};
+pub use subscription::{parse_subscription, NewEndpoint, ParsedProfile};
 pub use utils::UTLS_FINGERPRINTS;

@@ -1,8 +1,10 @@
 import type { Component } from "solid-js";
 import { For, Show, createSignal } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import {
   TbOutlineFolders,
   TbOutlinePlus,
+  TbOutlineRadar,
   TbOutlineRefresh,
 } from "solid-icons/tb";
 
@@ -15,6 +17,7 @@ import type { ProfileSummary } from "@/types";
 
 export const ProfilesList: Component = () => {
   const { profiles, loading, error, refetch } = useProfiles();
+  const navigate = useNavigate();
 
   const [adding, setAdding] = createSignal(false);
   const [editing, setEditing] = createSignal<ProfileSummary | null>(null);
@@ -38,6 +41,15 @@ export const ProfilesList: Component = () => {
           Profiles
         </h1>
         <div class="flex gap-2">
+          <button
+            type="button"
+            class="flex size-8 cursor-pointer items-center justify-center rounded-full bg-base-content/10 text-base-content/70 transition-colors hover:bg-base-content/20 hover:text-base-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-40"
+            title="Discovery"
+            aria-label="Discovery"
+            onClick={() => navigate("/discovery")}
+          >
+            <TbOutlineRadar size={18} />
+          </button>
           <button
             type="button"
             class="flex size-8 cursor-pointer items-center justify-center rounded-full bg-base-content/10 text-base-content/70 transition-colors hover:bg-base-content/20 hover:text-base-content focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-40"

@@ -309,3 +309,46 @@ export interface UrlStatEntry {
   ok: number;
   failed: number;
 }
+
+export const DISCOVERY_PROGRESS_EVENT = "discovery-progress";
+
+/** One public subscription source of the Discovery catalog; each run
+ *  creates/refreshes the profile it links via `profileId`. */
+export interface DiscoverySource {
+  id: number;
+  url: string;
+  name: string;
+  enabled: boolean;
+  position: number;
+  profileId: number | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+  lastItemCount: number | null;
+}
+
+/** Snapshot of a Discovery run; lets a re-mounted page adopt it. */
+export interface DiscoveryRunStatus {
+  startedAt: string;
+  total: number;
+  done: number;
+  failed: number;
+  created: number;
+  updated: number;
+  phase: "fetch" | "testing" | "done";
+  testProfileId: number | null;
+  testProfileName: string | null;
+  cancelled: boolean;
+}
+
+export type DiscoveryProgress =
+  | { kind: "source-started"; sourceId: number; name: string }
+  | {
+      kind: "source-done";
+      sourceId: number;
+      name: string;
+      ok: boolean;
+      itemCount: number;
+      error: string | null;
+    }
+  | { kind: "scan-started"; profileId: number; name: string }
+  | { kind: "finished"; created: number; updated: number; failed: number };
