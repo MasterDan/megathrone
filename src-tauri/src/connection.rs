@@ -15,8 +15,8 @@
 //! `auto_select`); only a profile with nothing dialable at all falls back to
 //! a DPI-only session (active strategy + DPI routing: no proxy outbound,
 //! DPI rules intact, everything else direct). Traffic reaches sing-box
-//! either through a local mixed port, the macOS system proxy, or a TUN
-//! device. On top of the session port, the raw local proxy (Settings →
+//! either through a local mixed port, the system proxy (macOS, Windows and
+//! GNOME/KDE Linux desktops), or a TUN device. On top of the session port, the raw local proxy (Settings →
 //! General, on by default) is a second mixed port whose rule rides above
 //! every routing rule: apps that support a proxy point at
 //! `127.0.0.1:<port>` and send *everything* — private ranges included —
@@ -116,15 +116,54 @@ struct MacServiceBackup {
     kinds: [ProxyBackup; 3],
 }
 
+/// The Windows system proxy state before the app touched it (HKCU
+/// `Internet Settings`): each value is `None` when the key did not exist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WindowsProxyBackup {
+    enable: Option<u32>,
+    server: Option<String>,
+    /// a configured PAC URL wins over the manual proxy — cleared while ours
+    /// runs, put back on restore
+    auto_config_url: Option<String>,
+}
+
+/// One GNOME proxy key with its previous raw `gsettings get` value (fed
+/// verbatim back to `gsettings set`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GnomeProxySetting {
+    schema: String,
+    key: String,
+    value: String,
+}
+
+/// One KDE `kioslaverc` `[Proxy Settings]` key with its previous value;
+/// `None` — the key was absent (deleted again on restore).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KdeProxySetting {
+    key: String,
+    value: Option<String>,
+}
+
+/// Everything needed to put the user's own system proxy settings back on
+/// disconnect. Only the variant of the running OS is ever constructed; the
+/// serde derives keep the foreign variants constructible on every target
+/// (the session marker serializes them).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum SystemProxyBackup {
+    MacOs(Vec<MacServiceBackup>),
+    Windows(WindowsProxyBackup),
+    Gnome(Vec<GnomeProxySetting>),
+    Kde(Vec<KdeProxySetting>),
+}
+
 #[derive(Debug, Default, Clone)]
 enum SystemProxyRestore {
     #[default]
     Untouched,
-    /// only ever constructed on macOS (the system-proxy integration); the
-    /// match arms elsewhere stay cross-platform, so silence Android's
-    /// never-constructed warning
+    /// never constructed on platforms without a system proxy integration
+    /// (android) — silence its dead-code lint
     #[cfg_attr(target_os = "android", allow(dead_code))]
-    MacOs(Vec<MacServiceBackup>),
+    Applied(SystemProxyBackup),
 }
 
 /// The byedpi (ciadpi) sidecar spawned next to sing-box when routing needs
@@ -223,7 +262,14 @@ struct SessionMarker {
     child_pid: u32,
     mixed_port: u16,
     config_path: String,
-    /// empty when the system proxy was never touched
+    /// the system proxy backup to restore after an unclean death (`None`
+    /// when the system proxy was never touched)
+    #[serde(default)]
+    proxy_backup: Option<SystemProxyBackup>,
+    /// legacy field of the macOS-only era — read (and restored) so a marker
+    /// written by an older build still cleans up after itself; never written
+    /// non-empty anymore
+    #[serde(default)]
     macos_backups: Vec<MacServiceBackup>,
     /// the byedpi sidecar; 0 when the DPI tunnel was not running
     #[serde(default)]
@@ -244,10 +290,11 @@ fn write_marker(app: &AppHandle, running: &Running) {
         child_pid: running.child.as_ref().map_or(0, CommandChild::pid),
         mixed_port: running.mixed_port,
         config_path: running.config_path.to_string_lossy().to_string(),
-        macos_backups: match &running.restore {
-            SystemProxyRestore::MacOs(backups) => backups.clone(),
-            SystemProxyRestore::Untouched => Vec::new(),
+        proxy_backup: match &running.restore {
+            SystemProxyRestore::Applied(backup) => Some(backup.clone()),
+            SystemProxyRestore::Untouched => None,
         },
+        macos_backups: Vec::new(),
         dpi_pid: running.dpi.as_ref().map_or(0, |dpi| dpi.child.pid()),
     };
     if let Ok(json) = serde_json::to_string_pretty(&marker) {
@@ -277,8 +324,14 @@ pub fn recover(app: &AppHandle) {
         return;
     }
 
-    if !marker.macos_backups.is_empty() {
-        let _ = restore_system_proxy(&marker.macos_backups);
+    // the proxy backup of the crashed session — or, from a pre-cross-platform
+    // build, its macOS-only legacy form
+    let backup = marker.proxy_backup.clone().or_else(|| {
+        (!marker.macos_backups.is_empty())
+            .then(|| SystemProxyBackup::MacOs(marker.macos_backups.clone()))
+    });
+    if let Some(backup) = backup {
+        let _ = restore_system_proxy(&backup);
     }
     if marker.child_pid != 0 {
         kill_if_process(marker.child_pid, "sing-box");
@@ -385,8 +438,9 @@ pub async fn connection_connect(
         other => return Err(format!("unknown proxy mode: {other}")),
     };
 
-    // creating a TUN interface needs root on macOS/Windows — fail up front
-    // with a clear reason instead of an obscure sing-box exit
+    // creating a TUN interface needs root on macOS/Linux and an elevated
+    // token on Windows — fail up front with a clear reason instead of an
+    // obscure sing-box exit
     #[cfg(not(target_os = "android"))]
     if mode == MODE_TUN && !running_as_root() {
         return Err(format!(
@@ -600,7 +654,8 @@ pub async fn connection_connect(
         }
     };
 
-    // wire the system proxy (macOS); on failure roll the instance back
+    // wire the system proxy (per-OS integration); on failure roll the
+    // instance back
     let restore = if mode == MODE_SYSTEM_PROXY {
         match tauri::async_runtime::spawn_blocking(move || enable_system_proxy(mixed_port))
             .await
@@ -966,7 +1021,7 @@ pub fn shutdown(app: &AppHandle) {
     let restore = std::mem::take(&mut running.restore);
     let restored = match &restore {
         SystemProxyRestore::Untouched => Ok(()),
-        SystemProxyRestore::MacOs(backups) => restore_system_proxy(backups),
+        SystemProxyRestore::Applied(backup) => restore_system_proxy(backup),
     };
     // keep the marker when the restore failed so the next start retries it
     if restored.is_ok() {
@@ -1003,9 +1058,9 @@ async fn teardown(app: &AppHandle, running: &mut Running) -> Result<(), String> 
     let restore = std::mem::take(&mut running.restore);
     let restored = match &restore {
         SystemProxyRestore::Untouched => Ok(()),
-        SystemProxyRestore::MacOs(backups) => {
-            let backups = backups.clone();
-            tauri::async_runtime::spawn_blocking(move || restore_system_proxy(&backups))
+        SystemProxyRestore::Applied(backup) => {
+            let backup = backup.clone();
+            tauri::async_runtime::spawn_blocking(move || restore_system_proxy(&backup))
                 .await
                 .map_err(|error| format!("system proxy restore failed: {error}"))?
         }
@@ -1624,20 +1679,35 @@ fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-#[cfg(windows)]
+/// Whether the process token is elevated (TUN/wintun needs a real
+/// administrator token, not just a group membership).
+#[cfg(target_os = "windows")]
 fn running_as_root() -> bool {
-    #[link(name = "shell32")]
-    extern "system" {
-        fn IsUserAnAdmin() -> i32;
-    }
-    // SAFETY: side-effect-free token query (TRUE iff the process runs with
-    // an elevated Administrators token — the "Run as administrator" case)
-    unsafe { IsUserAnAdmin() != 0 }
-}
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-#[cfg(all(not(unix), not(windows)))]
-fn running_as_root() -> bool {
-    false
+    // SAFETY: plain query calls on our own process token; every handle
+    // handed out is closed before returning
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return false;
+        }
+        let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut returned = 0;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            &mut elevation as *mut TOKEN_ELEVATION as *mut core::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        ) != 0;
+        CloseHandle(token);
+        ok && elevation.TokenIsElevated != 0
+    }
 }
 
 fn tail(bytes: &[u8]) -> String {
@@ -2035,7 +2105,8 @@ fn resolve_raw_port(configured: u16) -> u16 {
 }
 
 // ---------------------------------------------------------------------------
-// macOS system proxy (networksetup)
+// System proxy (macOS networksetup / Windows registry / GNOME gsettings /
+// KDE kioslaverc)
 // ---------------------------------------------------------------------------
 
 /// Parses `-getwebproxy`-style output into the previous state; `None` when
@@ -2064,7 +2135,7 @@ fn parse_proxy_state(output: &str) -> Option<ProxyBackup> {
 
 #[cfg(target_os = "macos")]
 mod sysproxy {
-    use super::{MacServiceBackup, ProxyBackup, SystemProxyRestore, parse_proxy_state};
+    use super::{MacServiceBackup, ProxyBackup, SystemProxyBackup, parse_proxy_state};
 
     /// (get, set, set-state) for web, secure-web and socks proxies; the
     /// order is what `MacServiceBackup::kinds` is aligned with.
@@ -2104,7 +2175,7 @@ mod sysproxy {
             .collect())
     }
 
-    pub(super) fn enable(port: u16) -> Result<SystemProxyRestore, String> {
+    pub(super) fn enable(port: u16) -> Result<SystemProxyBackup, String> {
         let services = list_services()?;
         let host = "127.0.0.1";
         // networksetup is slow (~hundreds of ms per call) — configure the
@@ -2122,7 +2193,7 @@ mod sysproxy {
         if backups.is_empty() {
             return Err("failed to set the system proxy on any network service".to_string());
         }
-        Ok(SystemProxyRestore::MacOs(backups))
+        Ok(SystemProxyBackup::MacOs(backups))
     }
 
     /// Snapshots the service's current proxy state, then points all three
@@ -2181,23 +2252,357 @@ mod sysproxy {
     }
 }
 
-#[cfg(target_os = "macos")]
+/// The Windows system proxy: the WinINet per-user settings in the registry
+/// (`HKCU\…\Internet Settings`). Setting `ProxyEnable`/`ProxyServer` plus the
+/// WinINet refresh broadcast is what every proxy tool on Windows does.
+#[cfg(target_os = "windows")]
+mod sysproxy {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+
+    use super::{SystemProxyBackup, WindowsProxyBackup};
+
+    const INTERNET_SETTINGS: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+    /// Makes WinINet (and everything honoring it — browsers included) pick
+    /// the registry changes up immediately instead of on the next refresh.
+    fn notify_wininet() {
+        use windows_sys::Win32::Networking::WinInet::{
+            InternetSetOptionW, INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED,
+        };
+        // SAFETY: both calls only broadcast the settings change — no
+        // handles or buffers of ours are passed
+        unsafe {
+            InternetSetOptionW(
+                std::ptr::null_mut(),
+                INTERNET_OPTION_SETTINGS_CHANGED,
+                std::ptr::null(),
+                0,
+            );
+            InternetSetOptionW(
+                std::ptr::null_mut(),
+                INTERNET_OPTION_REFRESH,
+                std::ptr::null(),
+                0,
+            );
+        }
+    }
+
+    fn open_settings() -> Result<RegKey, String> {
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(INTERNET_SETTINGS, KEY_READ | KEY_WRITE)
+            .map_err(|error| format!("failed to open the system proxy registry key: {error}"))
+    }
+
+    pub(super) fn enable(port: u16) -> Result<SystemProxyBackup, String> {
+        let key = open_settings()?;
+        let backup = WindowsProxyBackup {
+            enable: key.get_value("ProxyEnable").ok(),
+            server: key.get_value("ProxyServer").ok(),
+            auto_config_url: key.get_value("AutoConfigURL").ok(),
+        };
+
+        // a configured PAC URL would win over the manual proxy — clear it
+        // while ours runs (restored on disconnect)
+        let _ = key.delete_value("AutoConfigURL");
+        key.set_value("ProxyEnable", &1u32)
+            .map_err(|error| format!("failed to enable the system proxy: {error}"))?;
+        key.set_value("ProxyServer", &format!("127.0.0.1:{port}"))
+            .map_err(|error| {
+                format!("failed to point the system proxy at the local port: {error}")
+            })?;
+        notify_wininet();
+        Ok(SystemProxyBackup::Windows(backup))
+    }
+
+    pub(super) fn restore(backup: &WindowsProxyBackup) -> Result<(), String> {
+        let key = open_settings()?;
+        // ProxyEnable goes last: until then the toggle still points at the
+        // dead port either way, and a crash mid-restore leaves the user's
+        // own server configured
+        match &backup.server {
+            Some(server) => key.set_value("ProxyServer", server),
+            None => key.delete_value("ProxyServer").map(|_| ()),
+        }
+        .map_err(|error| format!("failed to restore the proxy server: {error}"))?;
+        match &backup.auto_config_url {
+            Some(url) => key.set_value("AutoConfigURL", url),
+            None => key.delete_value("AutoConfigURL").map(|_| ()),
+        }
+        .map_err(|error| format!("failed to restore the PAC URL: {error}"))?;
+        key.set_value("ProxyEnable", &backup.enable.unwrap_or(0))
+            .map_err(|error| format!("failed to restore the proxy toggle: {error}"))?;
+        notify_wininet();
+        Ok(())
+    }
+}
+
+/// The Linux system proxy: there is no single OS-wide setting — GNOME (and
+/// every gsettings-flavoured desktop) reads `org.gnome.system.proxy`, KDE
+/// reads `kioslaverc`. Both integrations snapshot the previous values and
+/// put them back verbatim on restore.
+#[cfg(target_os = "linux")]
+mod sysproxy {
+    use std::env;
+    use std::process::Command;
+
+    use super::{GnomeProxySetting, KdeProxySetting, SystemProxyBackup};
+
+    const GNOME_SCHEMA: &str = "org.gnome.system.proxy";
+
+    /// The (schema, key) pairs owned while connected: the master mode plus
+    /// the http/https/socks endpoints (the mixed port speaks all of them).
+    const GNOME_KEYS: [(&str, &str); 7] = [
+        (GNOME_SCHEMA, "mode"),
+        ("org.gnome.system.proxy.http", "host"),
+        ("org.gnome.system.proxy.http", "port"),
+        ("org.gnome.system.proxy.https", "host"),
+        ("org.gnome.system.proxy.https", "port"),
+        ("org.gnome.system.proxy.socks", "host"),
+        ("org.gnome.system.proxy.socks", "port"),
+    ];
+
+    const KDE_GROUP: &str = "Proxy Settings";
+    const KDE_KEYS: [&str; 4] = ["ProxyType", "httpProxy", "httpsProxy", "socksProxy"];
+
+    fn run(command: &mut Command, what: &str) -> Result<String, String> {
+        let output = command
+            .output()
+            .map_err(|error| format!("failed to run {what}: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "{what} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn gsettings(args: &[&str]) -> Result<String, String> {
+        let mut command = Command::new("gsettings");
+        command.args(args);
+        run(&mut command, "gsettings")
+    }
+
+    /// The `kreadconfig`/`kwriteconfig` pair of the installed KDE
+    /// generation (KDE 6 preferred over KDE 5).
+    struct KdeTools {
+        read: String,
+        write: String,
+    }
+
+    fn kde_tools() -> Option<KdeTools> {
+        ["6", "5"].iter().find_map(|generation| {
+            let read = format!("kreadconfig{generation}");
+            let mut probe = Command::new(&read);
+            probe.arg("--version");
+            probe.output().ok()?.status.success().then(|| KdeTools {
+                write: format!("kwriteconfig{generation}"),
+                read,
+            })
+        })
+    }
+
+    fn kde_read(tools: &KdeTools, key: &str) -> Result<String, String> {
+        let mut command = Command::new(&tools.read);
+        command.args(["--file", "kioslaverc", "--group", KDE_GROUP, "--key", key]);
+        run(&mut command, "kreadconfig")
+    }
+
+    /// `None` deletes the key (back to its absent state). The value is a
+    /// positional argument (no `--value` flag exists), `--notify` makes KDE
+    /// apps pick the change up immediately.
+    fn kde_write(tools: &KdeTools, key: &str, value: Option<&str>) -> Result<(), String> {
+        let mut command = Command::new(&tools.write);
+        command.args(["--file", "kioslaverc", "--group", KDE_GROUP, "--key", key, "--notify"]);
+        match value {
+            Some(value) => command.arg(value),
+            None => command.arg("--delete"),
+        };
+        run(&mut command, "kwriteconfig").map(|_| ())
+    }
+
+    pub(super) fn enable(port: u16) -> Result<SystemProxyBackup, String> {
+        let desktop = env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_uppercase();
+        // KDE first by name: KDE boxes often carry the GNOME schemas through
+        // GTK dependencies, where writing them would change nothing
+        if !desktop.contains("KDE") && gnome_available() {
+            return enable_gnome(port);
+        }
+        if let Some(tools) = kde_tools() {
+            return enable_kde(port, &tools);
+        }
+        Err(
+            "system proxy mode is not supported on this desktop environment \
+             (GNOME and KDE are supported) — use the local proxy port instead"
+                .to_string(),
+        )
+    }
+
+    /// Whether the GNOME proxy schema answers (a `gsettings` binary alone
+    /// proves nothing — it exists wherever GLib does).
+    fn gnome_available() -> bool {
+        gsettings(&["get", GNOME_SCHEMA, "mode"]).is_ok()
+    }
+
+    fn enable_gnome(port: u16) -> Result<SystemProxyBackup, String> {
+        let backup: Vec<GnomeProxySetting> = GNOME_KEYS
+            .iter()
+            .map(|&(schema, key)| {
+                Ok(GnomeProxySetting {
+                    schema: schema.to_string(),
+                    key: key.to_string(),
+                    // the raw gvariant value — round-trips verbatim
+                    value: gsettings(&["get", schema, key])?,
+                })
+            })
+            .collect::<Result<_, String>>()
+            .map_err(|error| format!("reading the GNOME proxy settings failed: {error}"))?;
+
+        let port = port.to_string();
+        let sets: [(&str, &str, &str); 7] = [
+            (GNOME_SCHEMA, "mode", "'manual'"),
+            ("org.gnome.system.proxy.http", "host", "'127.0.0.1'"),
+            ("org.gnome.system.proxy.http", "port", &port),
+            ("org.gnome.system.proxy.https", "host", "'127.0.0.1'"),
+            ("org.gnome.system.proxy.https", "port", &port),
+            ("org.gnome.system.proxy.socks", "host", "'127.0.0.1'"),
+            ("org.gnome.system.proxy.socks", "port", &port),
+        ];
+        for (schema, key, value) in sets {
+            if let Err(error) = gsettings(&["set", schema, key, value]) {
+                let _ = restore_gnome(&backup);
+                return Err(format!("failed to apply the GNOME proxy settings: {error}"));
+            }
+        }
+        Ok(SystemProxyBackup::Gnome(backup))
+    }
+
+    fn restore_gnome(backup: &[GnomeProxySetting]) -> Result<(), String> {
+        let errors: Vec<String> = backup
+            .iter()
+            .filter_map(|setting| {
+                gsettings(&["set", &setting.schema, &setting.key, &setting.value]).err()
+            })
+            .collect();
+        match errors.is_empty() {
+            true => Ok(()),
+            false => Err(errors.join("; ")),
+        }
+    }
+
+    fn enable_kde(port: u16, tools: &KdeTools) -> Result<SystemProxyBackup, String> {
+        let backup: Vec<KdeProxySetting> = KDE_KEYS
+            .iter()
+            .map(|&key| {
+                // kreadconfig prints an empty string for an absent key
+                let value = kde_read(tools, key)?;
+                Ok(KdeProxySetting {
+                    key: key.to_string(),
+                    value: (!value.is_empty()).then_some(value),
+                })
+            })
+            .collect::<Result<_, String>>()
+            .map_err(|error| format!("reading the KDE proxy settings failed: {error}"))?;
+
+        let sets: [(&str, String); 4] = [
+            ("ProxyType", "1".to_string()), // 1 — manual proxies
+            ("httpProxy", format!("http://127.0.0.1:{port}")),
+            ("httpsProxy", format!("http://127.0.0.1:{port}")),
+            ("socksProxy", format!("socks://127.0.0.1:{port}")),
+        ];
+        for (key, value) in sets {
+            if let Err(error) = kde_write(tools, key, Some(&value)) {
+                let _ = restore_kde(backup.as_slice(), tools);
+                return Err(format!("failed to apply the KDE proxy settings: {error}"));
+            }
+        }
+        Ok(SystemProxyBackup::Kde(backup))
+    }
+
+    fn restore_kde(backup: &[KdeProxySetting], tools: &KdeTools) -> Result<(), String> {
+        let errors: Vec<String> = backup
+            .iter()
+            .filter_map(|setting| {
+                kde_write(tools, &setting.key, setting.value.as_deref()).err()
+            })
+            .collect();
+        match errors.is_empty() {
+            true => Ok(()),
+            false => Err(errors.join("; ")),
+        }
+    }
+
+    pub(super) fn restore(backup: &SystemProxyBackup) -> Result<(), String> {
+        match backup {
+            SystemProxyBackup::Gnome(settings) => restore_gnome(settings),
+            SystemProxyBackup::Kde(settings) => {
+                let Some(tools) = kde_tools() else {
+                    return Err(
+                        "kreadconfig/kwriteconfig not found — cannot restore the KDE \
+                         proxy settings"
+                            .to_string(),
+                    );
+                };
+                restore_kde(settings, &tools)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux"
+))]
 fn enable_system_proxy(port: u16) -> Result<SystemProxyRestore, String> {
-    sysproxy::enable(port)
+    sysproxy::enable(port).map(SystemProxyRestore::Applied)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux"
+)))]
 fn enable_system_proxy(_port: u16) -> Result<SystemProxyRestore, String> {
-    Err("system proxy mode is only supported on macOS".to_string())
+    Err(
+        "system proxy mode is not available on this platform — apps reach the proxy \
+         through the local port instead"
+            .to_string(),
+    )
 }
 
 #[cfg(target_os = "macos")]
-fn restore_system_proxy(backups: &[MacServiceBackup]) -> Result<(), String> {
-    sysproxy::restore(backups)
+fn restore_system_proxy(backup: &SystemProxyBackup) -> Result<(), String> {
+    match backup {
+        SystemProxyBackup::MacOs(backups) => sysproxy::restore(backups),
+        _ => Ok(()),
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn restore_system_proxy(_backups: &[MacServiceBackup]) -> Result<(), String> {
+#[cfg(target_os = "windows")]
+fn restore_system_proxy(backup: &SystemProxyBackup) -> Result<(), String> {
+    match backup {
+        SystemProxyBackup::Windows(backup) => sysproxy::restore(backup),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn restore_system_proxy(backup: &SystemProxyBackup) -> Result<(), String> {
+    sysproxy::restore(backup)
+}
+
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux"
+)))]
+fn restore_system_proxy(_backup: &SystemProxyBackup) -> Result<(), String> {
     Ok(())
 }
 
@@ -2900,14 +3305,15 @@ Authenticated Proxy: 0";
             child_pid: 222,
             mixed_port: 7897,
             config_path: "/tmp/megathrone-run-1-7897.json".to_string(),
-            macos_backups: vec![MacServiceBackup {
+            proxy_backup: Some(SystemProxyBackup::MacOs(vec![MacServiceBackup {
                 service: "Wi-Fi".to_string(),
                 kinds: [
                     ProxyBackup::Disabled,
                     ProxyBackup::Enabled { host: "10.0.0.2".to_string(), port: 3128 },
                     ProxyBackup::Disabled,
                 ],
-            }],
+            }])),
+            macos_backups: Vec::new(),
             dpi_pid: 333,
         };
 
@@ -2918,10 +3324,14 @@ Authenticated Proxy: 0";
         assert_eq!(back.child_pid, 222);
         assert_eq!(back.dpi_pid, 333);
         assert_eq!(back.mixed_port, 7897);
-        assert_eq!(back.macos_backups.len(), 1);
-        assert_eq!(back.macos_backups[0].service, "Wi-Fi");
+        assert!(back.macos_backups.is_empty());
+        let Some(SystemProxyBackup::MacOs(backups)) = back.proxy_backup else {
+            panic!("the macOS backup must survive the roundtrip");
+        };
+        assert_eq!(backups.len(), 1);
+        assert_eq!(backups[0].service, "Wi-Fi");
         assert_eq!(
-            back.macos_backups[0].kinds[1],
+            backups[0].kinds[1],
             ProxyBackup::Enabled { host: "10.0.0.2".to_string(), port: 3128 }
         );
     }
@@ -2939,6 +3349,31 @@ Authenticated Proxy: 0";
         });
         let marker: SessionMarker = serde_json::from_value(legacy).expect("legacy marker");
         assert_eq!(marker.dpi_pid, 0);
+        assert!(marker.proxy_backup.is_none());
+
+        // markers from the macOS-only era carry `macosBackups` instead of
+        // `proxyBackup` — the recover path still restores them
+        let legacy = serde_json::json!({
+            "ownerPid": 111,
+            "childPid": 222,
+            "mixedPort": 7897,
+            "configPath": "/tmp/x.json",
+            "macosBackups": [
+                {
+                    "service": "Wi-Fi",
+                    "kinds": [
+                        "Disabled",
+                        { "Enabled": { "host": "10.0.0.2", "port": 3128 } },
+                        "Disabled",
+                    ],
+                },
+            ],
+        });
+        let marker: SessionMarker =
+            serde_json::from_value(legacy).expect("legacy marker with backups");
+        assert!(marker.proxy_backup.is_none());
+        assert_eq!(marker.macos_backups.len(), 1);
+        assert_eq!(marker.macos_backups[0].service, "Wi-Fi");
     }
 
     #[test]

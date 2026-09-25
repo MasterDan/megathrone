@@ -57,6 +57,23 @@ async fn sing_box_version() -> Result<String, String> {
 // bootstrap the generated gradle/Xcode project loads
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMA-BUF renderer breaks the Wayland connection on the
+    // proprietary NVIDIA driver (GDK aborts the whole process with
+    // "Error 71 Protocol error"); opt out before any webview exists,
+    // unless the user set the knob themselves. Compositing goes too:
+    // with DMABUF off it degrades into per-frame CPU→GPU copies (the
+    // UI crawls), while a plain software path renders UI-type content
+    // fast — the same pair tauri-forge ships.
+    #[cfg(target_os = "linux")]
+    if std::path::Path::new("/sys/module/nvidia").exists() {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     let auto_update_notify = Arc::new(Notify::new());
 
     #[allow(unused_mut)]

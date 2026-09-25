@@ -33,6 +33,17 @@ shared_child = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# the Windows system proxy (registry + WinINet refresh broadcast) and the
+# TUN elevation check
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinInet",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
 # the system tray is a desktop-only feature of the tauri crate
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
