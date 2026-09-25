@@ -389,13 +389,11 @@ pub async fn connection_connect(
     // with a clear reason instead of an obscure sing-box exit
     #[cfg(not(target_os = "android"))]
     if mode == MODE_TUN && !running_as_root() {
-        return Err(
+        return Err(format!(
             "TUN mode needs administrator privileges to create the network interface, \
-             but the app is running as a regular user. For development launch the app \
-             elevated (e.g. `sudo pnpm tauri dev`, or build once and run the binary with \
-             sudo) — or use System Proxy mode instead."
-                .to_string(),
-        );
+             but the app is running as a regular user. {}",
+            elevation_hint()
+        ));
     }
 
     // Android TUN needs a VpnService-based tunnel (a Kotlin service owning
@@ -1599,14 +1597,25 @@ fn permission_hint(mode: &str, reason: &str) -> String {
         reason.contains("not permitted") || reason.contains("permission denied");
     if mode == MODE_TUN && denied {
         format!(
-            "{reason}\n\nTUN mode needs administrator privileges to create the network \
-             interface. Launch the app elevated (on macOS: build it and run the binary \
-             with sudo, or `sudo pnpm tauri dev` for a quick dev loop) — or use System \
-             Proxy mode instead."
+            "{reason}\n\nTUN mode needs administrator privileges to create the \
+             network interface. {}",
+            elevation_hint()
         )
     } else {
         reason.to_string()
     }
+}
+
+/// Per-OS advice for launching the app elevated (TUN refusals).
+#[cfg(windows)]
+fn elevation_hint() -> &'static str {
+    "Restart the app with \"Run as administrator\" — or use System Proxy mode instead."
+}
+
+#[cfg(not(windows))]
+fn elevation_hint() -> &'static str {
+    "For development launch the app elevated (e.g. `sudo pnpm tauri dev`, or build \
+     once and run the binary with sudo) — or use System Proxy mode instead."
 }
 
 #[cfg(all(unix, not(target_os = "android")))]
@@ -1615,7 +1624,18 @@ fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn running_as_root() -> bool {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn IsUserAnAdmin() -> i32;
+    }
+    // SAFETY: side-effect-free token query (TRUE iff the process runs with
+    // an elevated Administrators token — the "Run as administrator" case)
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn running_as_root() -> bool {
     false
 }
