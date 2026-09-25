@@ -1,5 +1,5 @@
 import type { Accessor, Component } from "solid-js";
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { TbOutlineNetwork, TbOutlinePower, TbOutlineWorld } from "solid-icons/tb";
 
@@ -10,13 +10,17 @@ import type { ProxyMode } from "@/types";
  *  independent toggles, since TUN is a superset of System Proxy. Styled
  *  after the floating top dock (AppLayout).
  *
- *  TUN needs a VpnService tunnel on Android — the mobile build hides it
- *  (the backend refuses it with an explanatory error either way). */
+ *  Neither takeover mode is reachable on Android: TUN needs a VpnService
+ *  tunnel and the global system proxy is a privileged setting — the mobile
+ *  build shows neither (the backend refuses them with an explanatory error
+ *  either way) and the local proxy port is the only integration point. */
 const MODES: ReadonlyArray<{ value: ProxyMode; label: string; icon: Component<{ class?: string }> }> = [
   { value: "off", label: "Off", icon: TbOutlinePower },
-  { value: "system-proxy", label: "System Proxy", icon: TbOutlineWorld },
   ...(BUILD_UI_VARIANT === "desktop"
-    ? [{ value: "tun" as const, label: "TUN", icon: TbOutlineNetwork }]
+    ? [
+        { value: "system-proxy" as const, label: "System Proxy", icon: TbOutlineWorld },
+        { value: "tun" as const, label: "TUN", icon: TbOutlineNetwork },
+      ]
     : []),
 ];
 
@@ -30,27 +34,29 @@ export const ModeControls: Component<{
   const disabled = () => props.disabled?.() ?? false;
 
   return (
-    <div class="flex items-center gap-1 rounded-2xl border border-base-content/10 bg-base-100/60 p-1 shadow-lg backdrop-blur-md">
-      <div role="group" aria-label="Proxy mode" class="flex items-center gap-1">
-        <For each={MODES}>
-          {(option) => (
-            <button
-              type="button"
-              aria-pressed={props.mode() === option.value}
-              class="btn btn-ghost btn-sm gap-2 rounded-xl"
-              classList={{
-                "text-base-content/60": props.mode() !== option.value,
-                "bg-base-content/10 text-base-content": props.mode() === option.value,
-              }}
-              disabled={disabled()}
-              onClick={() => props.onChange(option.value)}
-            >
-              <Dynamic component={option.icon} class="size-4" />
-              {option.label}
-            </button>
-          )}
-        </For>
+    <Show when={MODES.length > 1}>
+      <div class="flex items-center gap-1 rounded-2xl border border-base-content/10 bg-base-100/60 p-1 shadow-lg backdrop-blur-md">
+        <div role="group" aria-label="Proxy mode" class="flex items-center gap-1">
+          <For each={MODES}>
+            {(option) => (
+              <button
+                type="button"
+                aria-pressed={props.mode() === option.value}
+                class="btn btn-ghost btn-sm gap-2 rounded-xl"
+                classList={{
+                  "text-base-content/60": props.mode() !== option.value,
+                  "bg-base-content/10 text-base-content": props.mode() === option.value,
+                }}
+                disabled={disabled()}
+                onClick={() => props.onChange(option.value)}
+              >
+                <Dynamic component={option.icon} class="size-4" />
+                {option.label}
+              </button>
+            )}
+          </For>
+        </div>
       </div>
-    </div>
+    </Show>
   );
 };

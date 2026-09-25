@@ -28,9 +28,10 @@ const readStoredProfileId = () => {
 const readStoredMode = (): ProxyMode => {
   const stored = localStorage.getItem(SELECTED_MODE_KEY);
   if (stored !== "system-proxy" && stored !== "tun") return "off";
-  // a TUN selection carried over from the desktop variant cannot run on
-  // mobile — degrade to the nearest supported mode instead of failing
-  return stored === "tun" && BUILD_UI_VARIANT === "mobile" ? "system-proxy" : stored;
+  // a takeover selection carried over from the desktop variant cannot run
+  // on mobile (no VpnService tunnel, no privileged system proxy) — degrade
+  // to the local-ports-only mode instead of failing
+  return BUILD_UI_VARIANT === "mobile" ? "off" : stored;
 };
 
 export const Home: Component = () => {
