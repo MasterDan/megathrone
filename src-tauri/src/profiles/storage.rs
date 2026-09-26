@@ -14,7 +14,7 @@ const PROFILE_COLUMNS: &str = "id, name, source_url, source_path, auto_update_mi
 pub(super) fn list_profiles(conn: &Connection) -> Result<Vec<ProfileSummary>, String> {
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT {PROFILE_COLUMNS} FROM profiles ORDER BY created_at DESC, id DESC"
+            "SELECT {PROFILE_COLUMNS} FROM profiles ORDER BY name COLLATE NOCASE, id ASC"
         ))
         .map_err(db_err)?;
     let rows = stmt

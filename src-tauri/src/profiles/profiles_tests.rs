@@ -66,6 +66,22 @@ fn import_list_rename_delete_flow() {
 }
 
 #[test]
+fn list_profiles_orders_by_name() {
+    let mut conn = test_db();
+
+    import_profile(&mut conn, "Zulu".into(), None, None, SAMPLE).expect("import");
+    import_profile(&mut conn, "alpha".into(), None, None, SAMPLE).expect("import");
+    import_profile(&mut conn, "Beta".into(), None, None, SAMPLE).expect("import");
+
+    let names: Vec<String> = list_profiles(&conn)
+        .expect("list")
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(names, vec!["alpha", "Beta", "Zulu"]);
+}
+
+#[test]
 fn import_rejects_garbage() {
     let mut conn = test_db();
     let error = import_profile(&mut conn, "Bad".into(), None, None, "hello world\nnothing useful")
