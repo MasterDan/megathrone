@@ -38,7 +38,14 @@ const SELECTION_TABS: Array<OptionTabItem<SelectionMode>> = (
   ["round_robin", "fastest", "most_available", "manual"] as const
 ).map((value) => ({ value, label: SELECTION_MODE_LABELS[value] }));
 
-function sourceLabel(profile: { sourceUrl: string | null; sourcePath: string | null }) {
+function sourceLabel(profile: {
+  sourceUrl: string | null;
+  sourcePath: string | null;
+  sourceDiscovery: boolean;
+}) {
+  if (profile.sourceDiscovery) {
+    return "Discovery";
+  }
   if (profile.sourceUrl) {
     try {
       return new URL(profile.sourceUrl).host;
@@ -296,8 +303,11 @@ export const ProfileEndpoints: Component<Partial<RouteSectionProps> & { profileI
     itemsApi?.revealItem(itemId);
   };
 
-  const hasSource = (data: { sourceUrl: string | null; sourcePath: string | null }) =>
-    Boolean(data.sourceUrl || data.sourcePath);
+  const hasSource = (data: {
+    sourceUrl: string | null;
+    sourcePath: string | null;
+    sourceDiscovery: boolean;
+  }) => !data.sourceDiscovery && Boolean(data.sourceUrl || data.sourcePath);
 
   const activeMode = (): SelectionMode => selection.mode() ?? "fastest";
 
@@ -371,12 +381,17 @@ export const ProfileEndpoints: Component<Partial<RouteSectionProps> & { profileI
           <div class="flex items-baseline justify-between gap-4">
             <span class="text-base-content/50">Auto-update</span>
             <Show
-              when={data().autoUpdateMinutes}
-              fallback={<span class="font-medium">Off</span>}
+              when={!data().sourceDiscovery}
+              fallback={<span class="font-medium">Managed by Discovery</span>}
             >
-              {(minutes) => (
-                <span class="font-medium">every {formatInterval(minutes())}</span>
-              )}
+              <Show
+                when={data().autoUpdateMinutes}
+                fallback={<span class="font-medium">Off</span>}
+              >
+                {(minutes) => (
+                  <span class="font-medium">every {formatInterval(minutes())}</span>
+                )}
+              </Show>
             </Show>
           </div>
           <div class="flex items-baseline justify-between gap-4">
@@ -386,7 +401,9 @@ export const ProfileEndpoints: Component<Partial<RouteSectionProps> & { profileI
           <div class="flex items-baseline justify-between gap-4">
             <span class="shrink-0 text-base-content/50">Source</span>
             <span class="break-all text-right text-xs text-base-content/70">
-              {data().sourceUrl ?? data().sourcePath ?? "pasted text"}
+              {data().sourceDiscovery
+                ? "Discovery"
+                : (data().sourceUrl ?? data().sourcePath ?? "pasted text")}
             </span>
           </div>
         </div>
@@ -508,27 +525,25 @@ export const ProfileEndpoints: Component<Partial<RouteSectionProps> & { profileI
                       class="pointer-events-auto relative flex items-center gap-1 rounded-2xl border border-base-content/10 bg-base-100/60 p-1 shadow-lg backdrop-blur-md transition-[padding] duration-200"
                       classList={{ "pb-2.5": !checkingLatency(), "pb-6": checkingLatency() }}
                     >
-                      <button
-                        type="button"
-                        class="inline-flex h-8 cursor-pointer select-none items-center justify-center gap-1.5 rounded-full bg-base-content/10 px-3 text-sm font-medium whitespace-nowrap text-base-content transition-colors hover:bg-base-content/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-40"
-                        title={
-                          updating()
-                            ? "Updating…"
-                            : hasSource(data())
-                              ? "Update now"
-                              : "No source to update from"
-                        }
-                        disabled={!hasSource(data()) || updating()}
-                        onClick={() => void update(data().id)}
-                      >
-                        <Show
-                          when={!updating()}
-                          fallback={<span class="loading loading-spinner loading-xs" />}
+                      {/* A Discovery profile cannot refresh itself — its
+                          dock carries the latency check only. */}
+                      <Show when={hasSource(data())}>
+                        <button
+                          type="button"
+                          class="inline-flex h-8 cursor-pointer select-none items-center justify-center gap-1.5 rounded-full bg-base-content/10 px-3 text-sm font-medium whitespace-nowrap text-base-content transition-colors hover:bg-base-content/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-40"
+                          title={updating() ? "Updating…" : "Update now"}
+                          disabled={updating()}
+                          onClick={() => void update(data().id)}
                         >
-                          <TbOutlineRefresh size={16} />
-                        </Show>
-                        Update
-                      </button>
+                          <Show
+                            when={!updating()}
+                            fallback={<span class="loading loading-spinner loading-xs" />}
+                          >
+                            <TbOutlineRefresh size={16} />
+                          </Show>
+                          Update
+                        </button>
+                      </Show>
                       <button
                         type="button"
                         class="inline-flex h-8 cursor-pointer select-none items-center justify-center gap-1.5 rounded-full px-3 text-sm font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary disabled:pointer-events-none disabled:opacity-40"

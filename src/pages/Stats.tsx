@@ -1,9 +1,18 @@
 import type { Component } from "solid-js";
-import { For, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { A } from "@solidjs/router";
-import { TbOutlineArrowLeft, TbOutlineCircleCheck, TbOutlineWorld, TbOutlineX } from "solid-icons/tb";
+import {
+  TbOutlineArrowLeft,
+  TbOutlineChevronDown,
+  TbOutlineCircleCheck,
+  TbOutlineCpu,
+  TbOutlineHelp,
+  TbOutlineWorld,
+  TbOutlineX,
+} from "solid-icons/tb";
 
 import { Empty } from "@/components/common/Empty";
+import { TransitionCollapse } from "@/components/common/transitions/TransitionCollapse";
 import { TrafficDock } from "@/components/home/TrafficDock";
 import { useIsMobileUi } from "@/contexts/uiVariant";
 import { useConnection } from "@/hooks/data/useConnection";
@@ -16,6 +25,34 @@ const TUNNEL_BADGES: Record<UrlStatEntry["tunnel"], { label: string; color: stri
   dpi: { label: "DPI", color: "#10b981" },
   direct: { label: "Direct", color: "#0ea5e9" },
 };
+
+/** The ok/failed/total triple shared by every row (group headers included). */
+const Counts: Component<{ ok: number; failed: number; requests: number }> = (props) => (
+  <>
+    <span
+      class="flex w-12 shrink-0 items-center justify-end gap-1 text-xs tabular-nums text-success"
+      classList={{ "opacity-40": props.ok === 0 }}
+      title="Closed with a response"
+    >
+      <TbOutlineCircleCheck size={13} class="shrink-0" />
+      {props.ok}
+    </span>
+    <span
+      class="flex w-12 shrink-0 items-center justify-end gap-1 text-xs tabular-nums text-error"
+      classList={{ "opacity-40": props.failed === 0 }}
+      title="Closed without a response"
+    >
+      <TbOutlineX size={13} class="shrink-0" />
+      {props.failed}
+    </span>
+    <span
+      class="w-10 shrink-0 text-right text-sm font-semibold tabular-nums"
+      title="Total requests, open ones included"
+    >
+      {props.requests}
+    </span>
+  </>
+);
 
 /** One summary row: the host that was reached, the tunnel it rode, the
  *  ok/failed split of its closed requests and the total (open ones
@@ -33,43 +70,115 @@ const UrlStatRow: Component<{ entry: UrlStatEntry }> = (props) => {
       >
         {badge().label}
       </span>
-      <span
-        class="flex w-12 shrink-0 items-center justify-end gap-1 text-xs tabular-nums text-success"
-        classList={{ "opacity-40": props.entry.ok === 0 }}
-        title="Closed with a response"
-      >
-        <TbOutlineCircleCheck size={13} class="shrink-0" />
-        {props.entry.ok}
-      </span>
-      <span
-        class="flex w-12 shrink-0 items-center justify-end gap-1 text-xs tabular-nums text-error"
-        classList={{ "opacity-40": props.entry.failed === 0 }}
-        title="Closed without a response"
-      >
-        <TbOutlineX size={13} class="shrink-0" />
-        {props.entry.failed}
-      </span>
-      <span
-        class="w-10 shrink-0 text-right text-sm font-semibold tabular-nums"
-        title="Total requests, open ones included"
-      >
-        {props.entry.requests}
-      </span>
+      <Counts ok={props.entry.ok} failed={props.entry.failed} requests={props.entry.requests} />
     </li>
   );
 };
 
-/** Session statistics: the per-URL request summary on top (which host was
- *  reached through which tunnel, ok vs failed) and the same live traffic
- *  charts as on Home at the bottom. Opened by clicking the traffic dock on
- *  Home. The page fills the viewport like Home does, so the dock keeps its
- *  full-window width and sits flush at the window bottom; the summary
- *  scrolls above it. */
+/** One process's rows folded together, plus the collapsed/expanded state
+ *  key (the raw process string — "" groups everything sing-box could not
+ *  attribute, shown as "Unknown process"). */
+interface ProcessGroup {
+  key: string;
+  label: string;
+  entries: UrlStatEntry[];
+  requests: number;
+  ok: number;
+  failed: number;
+}
+
+/** One collapsible process section: the header carries the process name
+ *  and its folded counts, the rows list the hosts it talked to. */
+const ProcessGroupSection: Component<{
+  group: ProcessGroup;
+  collapsed: boolean;
+  onToggle: () => void;
+}> = (props) => (
+  <section class="space-y-2">
+    <button
+      type="button"
+      class="flex w-full cursor-pointer items-center gap-3 rounded-xl bg-base-content/10 px-3 py-2 text-left transition-colors hover:bg-base-content/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+      onClick={() => props.onToggle()}
+      aria-expanded={!props.collapsed}
+    >
+      <TbOutlineChevronDown
+        size={14}
+        class="shrink-0 text-base-content/50 transition-transform duration-200"
+        classList={{ "-rotate-90": props.collapsed }}
+      />
+      <Show
+        when={props.group.key !== ""}
+        fallback={<TbOutlineHelp size={14} class="shrink-0 text-base-content/40" />}
+      >
+        <TbOutlineCpu size={14} class="shrink-0 text-base-content/60" />
+      </Show>
+      <span class="min-w-0 flex-1 truncate font-mono text-xs font-semibold" title={props.group.key}>
+        {props.group.label}
+      </span>
+      <Counts ok={props.group.ok} failed={props.group.failed} requests={props.group.requests} />
+    </button>
+    <TransitionCollapse>
+      <Show when={!props.collapsed}>
+        <ul class="ms-4 space-y-2">
+          <For each={props.group.entries}>{(entry) => <UrlStatRow entry={entry} />}</For>
+        </ul>
+      </Show>
+    </TransitionCollapse>
+  </section>
+);
+
+/** Session statistics: the per-URL request summary on top, grouped by the
+ *  process that made each request (each group folds to its header), and
+ *  the same live traffic charts as on Home at the bottom. Opened by
+ *  clicking the traffic dock on Home. The page fills the viewport like
+ *  Home does, so the dock keeps its full-window width and sits flush at
+ *  the window bottom; the summary scrolls above it. */
 export const Stats: Component = () => {
   const stats = useUrlStats();
   const connection = useConnection();
   const isMobile = useIsMobileUi();
   const connected = () => connection.snapshot()?.connected ?? false;
+  const [collapsed, setCollapsed] = createSignal<ReadonlySet<string>>(new Set());
+
+  const groups = (): ProcessGroup[] => {
+    const byProcess = new Map<string, ProcessGroup>();
+    for (const entry of stats.entries()) {
+      let group = byProcess.get(entry.process);
+      if (!group) {
+        group = {
+          key: entry.process,
+          label: entry.process === "" ? "Unknown process" : entry.process,
+          entries: [],
+          requests: 0,
+          ok: 0,
+          failed: 0,
+        };
+        byProcess.set(entry.process, group);
+      }
+      group.entries.push(entry);
+      group.requests += entry.requests;
+      group.ok += entry.ok;
+      group.failed += entry.failed;
+    }
+    const groups = [...byProcess.values()];
+    groups.sort((a, b) => b.requests - a.requests || a.label.localeCompare(b.label));
+    for (const group of groups) {
+      group.entries.sort((a, b) => b.requests - a.requests || a.host.localeCompare(b.host));
+    }
+    return groups;
+  };
+
+  const toggle = (key: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
 
   const totalRequests = () => stats.entries().reduce((sum, entry) => sum + entry.requests, 0);
   const totalFailed = () => stats.entries().reduce((sum, entry) => sum + entry.failed, 0);
@@ -103,7 +212,8 @@ export const Stats: Component = () => {
             <div class="min-w-0">
               <h1 class="truncate text-lg font-bold">Session statistics</h1>
               <p class="truncate text-xs text-base-content/50">
-                {stats.entries().length} hosts · {totalRequests()} requests · {totalFailed()} failed
+                {groups().length} processes · {stats.entries().length} hosts · {totalRequests()}{" "}
+                requests · {totalFailed()} failed
                 <Show when={connected()}> · counting</Show>
               </p>
             </div>
@@ -118,15 +228,23 @@ export const Stats: Component = () => {
               title="No requests yet"
               description={
                 connected()
-                  ? "Open something through the proxy — every host shows up here with the tunnel it rode."
-                  : "Connect the proxy and open something — every host shows up here with the tunnel it rode."
+                  ? "Open something through the proxy — every host shows up here under the process that asked for it."
+                  : "Connect the proxy and open something — every host shows up here under the process that asked for it."
               }
             />
           }
         >
-          <ul class="space-y-2">
-            <For each={stats.entries()}>{(entry) => <UrlStatRow entry={entry} />}</For>
-          </ul>
+          <div class="space-y-3">
+            <For each={groups()}>
+              {(group) => (
+                <ProcessGroupSection
+                  group={group}
+                  collapsed={collapsed().has(group.key)}
+                  onToggle={() => toggle(group.key)}
+                />
+              )}
+            </For>
+          </div>
         </Show>
       </div>
 

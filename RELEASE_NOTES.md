@@ -139,7 +139,74 @@ runtime.
 
 - TUN mode is not available on Android — a VpnService-based tunnel is future
   work; a stored TUN selection degrades to system-proxy
-- System-proxy wiring is macOS-only (a no-op elsewhere)
+- SSR links are not supported
+- A DPI fallback action requires a selected strategy: without one, connecting with
+  a DPI fallback is a hard error rather than silent misrouting
+- No in-app auto-update yet — watch the releases page
+
+---
+
+## v0.3.0 — Discovery & profile management
+
+A new Discovery page brings an editable catalog of public proxy-subscription
+sources: one run harvests free endpoints from all of them at once. Profiles
+also become properly manageable — reorder, hide and bulk-delete them from
+Settings.
+
+### What's inside
+
+- **Discovery** — a seeded catalog of public subscription sources on its own
+  page (the radar icon by the profile list). A run fetches every source in
+  parallel, filters out insecure links and duplicates, and lands each source
+  as a profile — a diff update on re-runs, so endpoints keep their latency
+  history. Sources marked as a merge group combine into one shared profile
+  instead of one per URL. An optional "test after" pass runs a latency scan
+  over everything imported; runs are cancellable, report progress per source,
+  and can repeat on a schedule
+- **Profile management** — Settings → Profiles: drag-reorder the sidebar list,
+  hide profiles you don't want to see, delete many at once
+- **System proxy on every desktop OS** — Windows (registry + live refresh) and
+  Linux (GNOME and KDE) join macOS; the previous system state is snapshotted
+  on connect and restored verbatim on disconnect
+- **Auto-select refinements** — hardened switch verdicts and mid-scan rescue
+  fixes for the automatic strategies
+
+### Under the hood
+
+- The Rust backend was restructured into focused modules (db, parser,
+  profiles, latency, connection, auto-select, DPI, routing categories,
+  settings) with tests in dedicated files — no behavior change, just a
+  codebase that's easier to grow
+- Windows session fixes and CI/Arch packaging polish
+- Database migrations v12–v16 (discovery sources and merge groups) and v13
+  (profile sidebar order & visibility)
+
+### Downloads
+
+| OS      | Artifact                                                 |
+| ------- | -------------------------------------------------------- |
+| Windows | `Megathrone_0.3.0_x64-setup.exe` (NSIS)                  |
+| macOS   | `Megathrone_0.3.0_universal.dmg` (Apple Silicon + Intel)  |
+| Linux   | `.deb`, `.rpm`, `.AppImage`                              |
+| Arch    | `megathrone-0.3.0-1-x86_64.pkg.tar.zst`, tarball         |
+| Android | `megathrone-v0.3.0-android-arm64.apk`                    |
+
+All bundles include the sing-box and byedpi sidecars — nothing is downloaded at
+runtime.
+
+### Notes
+
+- **Discovery:** public sources come and go — the catalog is fully editable
+  (add/remove/edit URLs, group them), and a source's profile is a normal
+  profile you can delete or refresh like any other
+- macOS, Windows and Android notes are unchanged from earlier releases
+  (ad-hoc signed / unsigned installer — SmartScreen / sideload with a stable
+  signature)
+
+### Known limitations
+
+- TUN mode is not available on Android — a VpnService-based tunnel is future
+  work; a stored TUN selection degrades to system-proxy
 - SSR links are not supported
 - A DPI fallback action requires a selected strategy: without one, connecting
   with a DPI fallback is a hard error rather than silent misrouting

@@ -1,8 +1,9 @@
 //! Background auto-update scheduler.
 //!
-//! A single long-lived task wakes either when the next profile update is due
-//! or when something mutates the profiles (see `AppState::notify_auto_update`).
-//! There is no polling loop: the sleep target comes from the DB
+//! A single long-lived task wakes either when the next profile update or
+//! the next scheduled Discovery run is due, or when something mutates
+//! the schedules (see `AppState::notify_auto_update`). There is no
+//! polling loop: the sleep target comes from the DB
 //! (`next_wake_seconds`), and every pass recomputes it.
 
 use std::sync::Arc;
@@ -11,6 +12,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
+use crate::discovery;
 use crate::AppState;
 use crate::profiles;
 
@@ -64,7 +66,7 @@ fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
 
     let mut failures = 0;
     for profile_id in due {
-        match profiles::update_profile_flow(app, profile_id) {
+        match profiles::update_profile_flow(app, profile_id, profiles::UpdateTrigger::Scheduler) {
             Ok(outcome) => {
                 // the endpoint set changed under a live session's feet —
                 // rebuild it silently (the manual Update button reports
@@ -86,13 +88,32 @@ fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
         }
     }
 
+    // the scheduled Discovery run; a started run carries its fresh
+    // interval — it stamps its own start time asynchronously, so the
+    // next wake comes from the interval, not from the KV
+    let discovery_started = match discovery::run_if_due(app) {
+        Ok(interval) => interval,
+        Err(error) => {
+            eprintln!("[auto-update] discovery run failed: {error}");
+            failures += 1;
+            None
+        }
+    };
+
     let next = {
         let state = app.state::<AppState>();
         let conn = state
             .db
             .lock()
             .map_err(|_| "database lock poisoned".to_string())?;
-        profiles::next_wake_seconds(&conn)?
+        let discovery_next = match discovery_started {
+            Some(minutes) => Some(minutes as f64 * 60.0),
+            None => discovery::next_due_seconds(&conn)?,
+        };
+        [profiles::next_wake_seconds(&conn)?, discovery_next]
+            .into_iter()
+            .flatten()
+            .reduce(f64::min)
     };
 
     Ok((next, failures))

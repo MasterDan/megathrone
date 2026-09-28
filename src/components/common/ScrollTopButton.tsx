@@ -5,34 +5,56 @@ import { createResizeObserver } from "@solid-primitives/resize-observer";
 import { Transition } from "solid-transition-group";
 import { TbOutlineArrowUp } from "solid-icons/tb";
 
+import { useScrollZone } from "@/contexts/scrollZone";
+
 /** A hair of scroll away from the very top shouldn't flash the button. */
 const SHOW_AFTER_PX = 300;
 
+/** The default corner: above the endpoints page's centered bottom action
+ *  bar on narrow screens (the same clearance the toasts keep), flush in
+ *  the corner everywhere else. */
+const DEFAULT_CORNER = "fixed bottom-24 right-4 z-40 sm:bottom-6 sm:right-6";
+
 /**
- * The global back-to-top corner button (mounted in AppLayout). The jump is
- * instant, like the grid's reveal scrolls: one range change — one window
- * load, no intermediate chunk fetches on the way up. On narrow screens it
- * sits above the endpoints page's centered bottom action bar (same
- * clearance the toasts keep), in the corner everywhere else.
+ * The global back-to-top corner button. The mobile AppLayout mounts it
+ * bare and it follows the document window; every desktop DesktopPage
+ * mounts it inside its ScrollZoneProvider (with its own corner class,
+ * clear of the status bar) and it follows the content zone instead. The
+ * jump is instant, like the grid's reveal scrolls: one range change — one
+ * window load, no intermediate chunk fetches on the way up.
  */
-export const ScrollTopButton: Component = () => {
+export const ScrollTopButton: Component<{ class?: string }> = (props) => {
+  const zone = useScrollZone();
   const [visible, setVisible] = createSignal(false);
 
   // rAF-batched like VirtualWindowGrid's measure — one read per scroll frame
   let frame = 0;
   const measure = () => {
     frame = 0;
-    setVisible(window.scrollY > SHOW_AFTER_PX);
+    setVisible((zone()?.scrollTop ?? window.scrollY) > SHOW_AFTER_PX);
   };
   const scheduleMeasure = () => {
     if (!frame) {
       frame = requestAnimationFrame(measure);
     }
   };
+  const jumpToTop = () => {
+    const el = zone();
+    if (el) {
+      el.scrollTo({ top: 0 });
+    } else {
+      window.scrollTo({ top: 0 });
+    }
+  };
 
   onMount(() => {
     measure();
-    makeEventListener(window, "scroll", scheduleMeasure, { passive: true });
+    const el = zone();
+    if (el) {
+      makeEventListener(el, "scroll", scheduleMeasure, { passive: true });
+    } else {
+      makeEventListener(window, "scroll", scheduleMeasure, { passive: true });
+    }
   });
   // route swaps change the page height without any scroll event
   createResizeObserver(document.body, scheduleMeasure);
@@ -43,7 +65,7 @@ export const ScrollTopButton: Component = () => {
   });
 
   return (
-    <div class="fixed bottom-24 right-4 z-40 sm:bottom-6 sm:right-6">
+    <div class={props.class ?? DEFAULT_CORNER}>
       <Transition
         enterClass="translate-y-2 opacity-0"
         enterActiveClass="transition duration-200 ease-out"
@@ -61,7 +83,7 @@ export const ScrollTopButton: Component = () => {
               class="flex size-10 items-center justify-center rounded-full bg-base-content/10 text-base-content/70 shadow-lg backdrop-blur-md transition-colors hover:bg-base-content/20 hover:text-base-content"
               title="Back to top"
               aria-label="Back to top"
-              onClick={() => window.scrollTo({ top: 0 })}
+              onClick={jumpToTop}
             >
               <TbOutlineArrowUp size={18} />
             </button>

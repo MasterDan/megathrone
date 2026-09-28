@@ -1,24 +1,32 @@
 import type { Component } from "solid-js";
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
 import { useLocation, useNavigate } from "@solidjs/router";
 import { Dynamic } from "solid-js/web";
-import { TbOutlineAdjustments, TbOutlineRoute, TbOutlineSettings } from "solid-icons/tb";
+import { TbOutlineAdjustments, TbOutlineLayoutList, TbOutlineRoute, TbOutlineSettings } from "solid-icons/tb";
 
 import { DesktopPage } from "@/components/layout/desktop/DesktopPage";
 import { GeneralSection } from "@/components/settings/GeneralSection";
+import { ProfilesSection } from "@/components/settings/ProfilesSection";
 import { RoutingSection } from "@/components/settings/RoutingSection";
 
-type TabId = "general" | "routing";
+type TabId = "profiles" | "general" | "routing";
 
 const TABS: Array<{ id: TabId; label: string; icon: Component<{ class?: string }> }> = [
+  { id: "profiles", label: "Profiles", icon: TbOutlineLayoutList },
   { id: "general", label: "General", icon: TbOutlineAdjustments },
   { id: "routing", label: "Routing", icon: TbOutlineRoute },
 ];
 
+const isTabId = (value: string | null): value is TabId =>
+  value !== null && TABS.some((tab) => tab.id === value);
+
 /**
- * Desktop settings: General and Routing as page-header tabs. DPI strategies
- * are a page of their own (/dpi); a legacy ?tab=dpi deep link redirects
- * there. Only the active tab is mounted (mirrors the mobile page).
+ * Desktop settings: Profiles, General and Routing as page-header tabs.
+ * DPI strategies are a page of their own (/dpi); a legacy ?tab=dpi deep
+ * link redirects there. The tab stays in sync with ?tab= (tab clicks
+ * rewrite it, external navigations like the sidebar's profile-list gear
+ * switch the tab), and only the active tab is mounted (mirrors the
+ * mobile page).
  */
 export const DesktopSettings: Component = () => {
   const location = useLocation();
@@ -29,7 +37,21 @@ export const DesktopSettings: Component = () => {
     navigate("/dpi", { replace: true });
   }
 
-  const [tab, setTab] = createSignal<TabId>(requested === "routing" ? "routing" : "general");
+  const [tab, setTab] = createSignal<TabId>(isTabId(requested) ? requested : "general");
+
+  // deep links arriving while the page is already mounted (the sidebar's
+  // gear button) switch the tab too
+  createEffect(() => {
+    const next = new URLSearchParams(location.search).get("tab");
+    if (isTabId(next)) {
+      setTab(next);
+    }
+  });
+
+  const selectTab = (id: TabId) => {
+    setTab(id);
+    navigate(`/settings?tab=${id}`, { replace: true });
+  };
 
   return (
     <DesktopPage
@@ -53,7 +75,7 @@ export const DesktopSettings: Component = () => {
                     "text-base-content/60": tab() !== entry.id,
                     "bg-base-content/10 text-base-content": tab() === entry.id,
                   }}
-                  onClick={() => setTab(entry.id)}
+                  onClick={() => selectTab(entry.id)}
                 >
                   <Dynamic component={entry.icon} class="size-4" />
                   {entry.label}
@@ -65,6 +87,9 @@ export const DesktopSettings: Component = () => {
       }
     >
       <div class="mx-auto max-w-2xl">
+        <Show when={tab() === "profiles"}>
+          <ProfilesSection />
+        </Show>
         <Show when={tab() === "general"}>
           <GeneralSection />
         </Show>

@@ -51,6 +51,15 @@ export function useProfileActions(onChanged: () => void) {
 
   const remove = (profileId: number) => run(() => invoke("profile_delete", { profileId }));
 
+  const removeBulk = (profileIds: number[]) =>
+    run(() => invoke("profiles_delete_bulk", { profileIds }));
+
+  const setSidebarVisible = (profileId: number, visible: boolean) =>
+    run(() => invoke("profile_set_sidebar_visible", { profileId, visible }));
+
+  const setSidebarOrder = (orderedIds: number[]) =>
+    run(() => invoke("profile_set_sidebar_order", { orderedIds }));
+
   const setAutoUpdate = (profileId: number, minutes: number | null) =>
     run(() => invoke("profile_set_auto_update", { profileId, minutes }));
 
@@ -63,6 +72,9 @@ export function useProfileActions(onChanged: () => void) {
     update,
     rename,
     remove,
+    removeBulk,
+    setSidebarVisible,
+    setSidebarOrder,
     setAutoUpdate,
   };
 }

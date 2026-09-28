@@ -2,6 +2,7 @@ import type { Component, JSXElement } from "solid-js";
 import { Show } from "solid-js";
 
 import { ScrollZoneProvider } from "@/contexts/scrollZone";
+import { ScrollTopButton } from "@/components/common/ScrollTopButton";
 
 interface DesktopPageProps {
   /** Page header above the content zone (title, page-level actions). */
@@ -35,7 +36,13 @@ export const DesktopPage: Component<DesktopPageProps> = (props) => {
       </Show>
       <div class="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-base-content/10 bg-base-content/[0.02]">
         <div ref={zone} class="min-h-0 flex-1 overflow-y-auto p-4">
-          <ScrollZoneProvider scroller={() => zone ?? null}>{props.children}</ScrollZoneProvider>
+          <ScrollZoneProvider scroller={() => zone ?? null}>
+            {props.children}
+            {/* viewport-fixed, but mounted inside the provider so it tracks
+                the zone's scroll; the corner clears the status bar across
+                the window bottom */}
+            <ScrollTopButton class="fixed bottom-12 right-6 z-40" />
+          </ScrollZoneProvider>
         </div>
         <Show when={props.footer}>
           <div class="shrink-0">{props.footer}</div>

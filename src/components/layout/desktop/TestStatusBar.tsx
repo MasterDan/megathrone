@@ -6,11 +6,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   TbOutlineActivity,
+  TbOutlineInfoCircle,
   TbOutlinePlayerStop,
   TbOutlineRefresh,
   TbOutlineShieldLock,
 } from "solid-icons/tb";
 
+import { AboutModal } from "@/components/layout/AboutModal";
 import { useProfileActions } from "@/hooks/data/useProfileActions";
 import { useProfiles } from "@/hooks/data/useProfiles";
 import { selectedProfileId } from "@/stores/session";
@@ -137,6 +139,7 @@ export const TestStatusBar: Component = () => {
   const { profiles } = useProfiles();
   const actions = useProfileActions(() => {});
 
+  const [aboutOpen, setAboutOpen] = createSignal(false);
   const [scans, setScans] = createSignal<Record<number, ScanActivity>>({});
   const [dpiTest, setDpiTest] = createSignal<ScanActivity | null>(null);
   const [updates, setUpdates] = createSignal<Record<number, UpdateActivity>>({});
@@ -175,7 +178,12 @@ export const TestStatusBar: Component = () => {
   };
   const currentHasSource = () => {
     const profile = currentProfile();
-    return Boolean(profile && (profile.sourceUrl || profile.sourcePath));
+    // a Discovery profile cannot refresh itself — no Update button at all
+    return Boolean(
+      profile &&
+        !profile.sourceDiscovery &&
+        (profile.sourceUrl || profile.sourcePath),
+    );
   };
 
   const scanEntries = () => Object.entries(scans());
@@ -300,11 +308,24 @@ export const TestStatusBar: Component = () => {
   });
 
   return (
-    <footer
-      class="flex h-10 shrink-0 items-center gap-3 overflow-hidden border-t border-base-content/10 bg-base-100 px-3 text-xs"
-      aria-label="Test progress"
-    >
-      <div class="flex min-w-0 flex-1 items-center">
+    <>
+      <footer
+        class="flex h-10 shrink-0 items-center gap-3 overflow-hidden border-t border-base-content/10 bg-base-100 px-3 text-xs"
+        aria-label="Test progress"
+      >
+        {/* About lives in the bar's left corner — deliberately small and
+            dim: an occasional lookup, not an action */}
+        <button
+          type="button"
+          class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-base-content/35 transition-colors hover:bg-base-content/10 hover:text-base-content/70"
+          title="About"
+          aria-label="About"
+          onClick={() => setAboutOpen(true)}
+        >
+          <TbOutlineInfoCircle size={14} />
+        </button>
+
+        <div class="flex min-w-0 flex-1 items-center">
         <Show when={endpointContext() && scanningCurrent()}>
           <CurrentScanBar name={currentName()} progress={currentScan()} />
         </Show>
@@ -345,68 +366,67 @@ export const TestStatusBar: Component = () => {
         </Show>
       </div>
 
-      <Show when={endpointContext() && currentProfileId() !== null}>
-        <div class="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            class="btn btn-ghost btn-xs gap-1.5 rounded-lg"
-            title={
-              currentUpdating()
-                ? "Updating…"
-                : currentHasSource()
-                  ? "Update now"
-                  : "No source to update from"
-            }
-            disabled={!currentHasSource() || currentUpdating()}
-            onClick={() => {
-              const id = currentProfileId();
-              if (id !== null) {
-                void actions.update(id);
-              }
-            }}
-          >
-            <Show
-              when={!currentUpdating()}
-              fallback={<span class="loading loading-spinner loading-xs" />}
-            >
-              <TbOutlineRefresh size={14} />
+        <Show when={endpointContext() && currentProfileId() !== null}>
+          <div class="flex shrink-0 items-center gap-1">
+            <Show when={currentHasSource()}>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs gap-1.5 rounded-lg"
+                title={currentUpdating() ? "Updating…" : "Update now"}
+                disabled={currentUpdating()}
+                onClick={() => {
+                  const id = currentProfileId();
+                  if (id !== null) {
+                    void actions.update(id);
+                  }
+                }}
+              >
+                <Show
+                  when={!currentUpdating()}
+                  fallback={<span class="loading loading-spinner loading-xs" />}
+                >
+                  <TbOutlineRefresh size={14} />
+                </Show>
+                Update
+              </button>
             </Show>
-            Update
-          </button>
-          <button
-            type="button"
-            class="btn btn-xs gap-1.5 rounded-lg border-0"
-            classList={{
-              "bg-base-content/10 text-base-content hover:bg-base-content/20":
-                !scanningCurrent(),
-              "bg-primary/20 text-primary hover:bg-primary/30": scanningCurrent(),
-            }}
-            title={
-              scanningCurrent()
-                ? "Stop the running scan"
-                : "URL-test every endpoint through sing-box"
-            }
-            disabled={stoppingScan()}
-            onClick={() => void (scanningCurrent() ? stopLatency() : checkLatency())}
-          >
-            <Switch>
-              <Match when={stoppingScan()}>
-                <span class="loading loading-spinner loading-xs" />
-                Stopping…
-              </Match>
-              <Match when={scanningCurrent()}>
-                <TbOutlinePlayerStop size={14} />
-                Stop Testing
-              </Match>
-              <Match when={true}>
-                <TbOutlineActivity size={14} />
-                Check Latency
-              </Match>
-            </Switch>
-          </button>
-        </div>
-      </Show>
-    </footer>
+            <button
+              type="button"
+              class="btn btn-xs gap-1.5 rounded-lg border-0"
+              classList={{
+                "bg-base-content/10 text-base-content hover:bg-base-content/20":
+                  !scanningCurrent(),
+                "bg-primary/20 text-primary hover:bg-primary/30": scanningCurrent(),
+              }}
+              title={
+                scanningCurrent()
+                  ? "Stop the running scan"
+                  : "URL-test every endpoint through sing-box"
+              }
+              disabled={stoppingScan()}
+              onClick={() => void (scanningCurrent() ? stopLatency() : checkLatency())}
+            >
+              <Switch>
+                <Match when={stoppingScan()}>
+                  <span class="loading loading-spinner loading-xs" />
+                  Stopping…
+                </Match>
+                <Match when={scanningCurrent()}>
+                  <TbOutlinePlayerStop size={14} />
+                  Stop Testing
+                </Match>
+                <Match when={true}>
+                  <TbOutlineActivity size={14} />
+                  Check Latency
+                </Match>
+              </Switch>
+            </button>
+          </div>
+        </Show>
+      </footer>
+
+      <AboutModal opened={aboutOpen} setOpened={setAboutOpen} />
+    </>
   );
 };
 

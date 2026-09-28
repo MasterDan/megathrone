@@ -12,6 +12,9 @@ interface Props {
 }
 
 function sourceLabel(profile: ProfileSummary) {
+  if (profile.sourceDiscovery) {
+    return "Discovery";
+  }
   if (profile.sourceUrl) {
     try {
       return new URL(profile.sourceUrl).host;

@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@elysiumorg/solid-use": "^0.1.25",
+    "@formkit/drag-and-drop": "^0.6.1",
     "@solid-primitives/event-listener": "^2.4.6",
     "@solid-primitives/resize-observer": "^2.2.0",
     "@solidjs/router": "^0.15.3",

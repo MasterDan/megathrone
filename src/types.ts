@@ -3,12 +3,20 @@ export interface ProfileSummary {
   name: string;
   sourceUrl: string | null;
   sourcePath: string | null;
+  /** the third source type: a Discovery run owns this profile's content —
+   *  it cannot refresh itself (no Update button, no auto-update) */
+  sourceDiscovery: boolean;
   autoUpdateMinutes: number | null;
   lastFetchedAt: string | null;
   itemCount: number;
   skippedCount: number;
   createdAt: string;
   updatedAt: string;
+  /** whether the profile shows in the desktop sidebar (a display concern
+   *  only — every profile stays selectable and listed in settings) */
+  sidebarVisible: boolean;
+  /** the explicit sidebar order (smaller first) */
+  sidebarPosition: number;
 }
 
 export interface EndpointItem {
@@ -298,14 +306,78 @@ export interface TrafficStats {
 
 export const TRAFFIC_STATS_EVENT = "traffic-stats";
 
-/** One row of the per-URL session summary: the host that was reached, the
- *  tunnel it rode and its request counts — `requests` counts every
- *  connection seen (open ones included), `ok`/`failed` split the closed
- *  ones by whether a response ever came back. */
+/** One row of the per-URL session summary: the process that made the
+ *  request (the binary name sing-box resolved for the connection — empty
+ *  when unknown), the host that was reached, the tunnel it rode and its
+ *  request counts — `requests` counts every connection seen (open ones
+ *  included), `ok`/`failed` split the closed ones by whether a response
+ *  ever came back. */
 export interface UrlStatEntry {
+  process: string;
   host: string;
   tunnel: "proxy" | "dpi" | "direct";
   requests: number;
   ok: number;
   failed: number;
 }
+
+export const DISCOVERY_PROGRESS_EVENT = "discovery-progress";
+
+/** One public subscription source of the Discovery catalog; each run
+ *  creates/refreshes the profile it links via `profileId`. Sources
+ *  sharing a `mergeGroup` land in one shared profile. */
+export interface DiscoverySource {
+  id: number;
+  url: string;
+  name: string;
+  enabled: boolean;
+  position: number;
+  mergeGroup: string | null;
+  profileId: number | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+  lastItemCount: number | null;
+}
+
+/** Snapshot of a Discovery run; lets a re-mounted page adopt it. */
+export interface DiscoveryRunStatus {
+  startedAt: string;
+  total: number;
+  done: number;
+  failed: number;
+  created: number;
+  updated: number;
+  phase: "fetch" | "testing" | "done";
+  testProfileId: number | null;
+  testProfileName: string | null;
+  cancelled: boolean;
+}
+
+/** Persisted Discovery run options: the "test after" default of the Run
+ *  button and the auto-update interval the background scheduler serves
+ *  (null — manual runs only). */
+export interface DiscoverySettings {
+  autoUpdateMinutes: number | null;
+  testAfter: boolean;
+}
+
+export type DiscoveryProgress =
+  | { kind: "source-started"; sourceId: number; name: string }
+  | {
+      kind: "source-done";
+      sourceId: number;
+      name: string;
+      ok: boolean;
+      itemCount: number;
+      error: string | null;
+    }
+  | {
+      kind: "group-done";
+      group: string;
+      name: string;
+      ok: boolean;
+      itemCount: number;
+      error: string | null;
+    }
+  | { kind: "scan-started"; profileId: number; name: string }
+  | { kind: "finished"; created: number; updated: number; failed: number };

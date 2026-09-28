@@ -6,6 +6,7 @@ use tokio::sync::Notify;
 mod auto_select;
 mod connection;
 mod db;
+mod discovery;
 mod dpi;
 mod dpi_test;
 mod latency;
@@ -57,6 +58,23 @@ async fn sing_box_version() -> Result<String, String> {
 // bootstrap the generated gradle/Xcode project loads
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMA-BUF renderer breaks the Wayland connection on the
+    // proprietary NVIDIA driver (GDK aborts the whole process with
+    // "Error 71 Protocol error"); opt out before any webview exists,
+    // unless the user set the knob themselves. Compositing goes too:
+    // with DMABUF off it degrades into per-frame CPU→GPU copies (the
+    // UI crawls), while a plain software path renders UI-type content
+    // fast — the same pair tauri-forge ships.
+    #[cfg(target_os = "linux")]
+    if std::path::Path::new("/sys/module/nvidia").exists() {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     let auto_update_notify = Arc::new(Notify::new());
 
     #[allow(unused_mut)]
@@ -74,7 +92,24 @@ pub fn run() {
             move |app| {
                 let data_dir = app.path().app_data_dir()?;
                 std::fs::create_dir_all(&data_dir)?;
-                let connection = db::open(&data_dir.join("megathrone.db"))
+                // the SQL migrations bundled as app resources (desktop); on
+                // Android the resource dir is the virtual asset:// URI Rust
+                // cannot read, so the compile-time copies serve instead. A
+                // resource copy that trails the embedded chain is stale
+                // (the dev CLI does not always refresh copied resources) —
+                // the embedded set wins so the schema never lags the binary
+                let migrations = app
+                    .path()
+                    .resolve("migrations", tauri::path::BaseDirectory::Resource)
+                    .ok()
+                    .and_then(|dir| db::Migrations::from_dir(&dir).ok())
+                    .filter(|migrations| {
+                        !migrations.is_empty()
+                            && migrations.latest_version()
+                                >= db::Migrations::embedded().latest_version()
+                    })
+                    .unwrap_or_else(db::Migrations::embedded);
+                let connection = db::open(&data_dir.join("megathrone.db"), &migrations)
                     .map_err(|e| format!("failed to initialize the profiles database: {e}"))?;
                 // first run only: the bundled strategy presets and the
                 // default test-site catalog (never into a user-touched table)
@@ -82,6 +117,8 @@ pub fn run() {
                     .map_err(|e| format!("failed to seed the default DPI strategies: {e}"))?;
                 sites::seed_default_sites(&connection)
                     .map_err(|e| format!("failed to seed the default test sites: {e}"))?;
+                discovery::seed_discovery_sources(&connection)
+                    .map_err(|e| format!("failed to seed the discovery sources: {e}"))?;
                 app.manage(AppState {
                     db: Mutex::new(connection),
                     auto_update_notify: notify,
@@ -110,6 +147,9 @@ pub fn run() {
             profiles::profile_update_status,
             profiles::profile_rename,
             profiles::profile_delete,
+            profiles::profiles_delete_bulk,
+            profiles::profile_set_sidebar_visible,
+            profiles::profile_set_sidebar_order,
             profiles::profile_set_auto_update,
             profiles::profile_items,
             profiles::profile_item_index,
@@ -154,7 +194,17 @@ pub fn run() {
             sites::sites_set_rule_test,
             sites::sites_delete_rule,
             routing::routing_list,
-            routing::routing_set_fallback
+            routing::routing_set_fallback,
+            discovery::discovery_sources_list,
+            discovery::discovery_source_add,
+            discovery::discovery_source_update,
+            discovery::discovery_source_delete,
+            discovery::discovery_source_delete_group,
+            discovery::discovery_run,
+            discovery::discovery_run_status,
+            discovery::discovery_run_cancel,
+            discovery::discovery_get_settings,
+            discovery::discovery_set_settings
         ])
         .on_window_event(|window, event| {
             // desktop only: hiding into the tray instead of quitting

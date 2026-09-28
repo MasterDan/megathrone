@@ -151,7 +151,12 @@ export function ComboBox<TItem>(props: ComboBoxProps<TItem>): JSXElement {
         <div
           ref={api.ref}
           class={clsx(
-            "input input-md relative flex w-full items-center flex-wrap gap-1 pr-9",
+            "input input-md relative flex w-full items-center gap-1 pr-9",
+            // a single selection renders at most one chip + the query input:
+            // keep them on one line (a wrapped caret line shoves the chip to
+            // the top of the fixed-height .input box). Multi-chip rows may
+            // genuinely overflow — wrap those.
+            multiple() ? "flex-wrap" : "flex-nowrap",
             props.disabled ? "input-disabled cursor-not-allowed" : "cursor-text",
             props.class,
           )}
@@ -199,7 +204,10 @@ export function ComboBox<TItem>(props: ComboBoxProps<TItem>): JSXElement {
           <input
             ref={inputRef}
             type="text"
-            class="min-w-[6ch] flex-1 border-0 bg-transparent p-0 outline-none"
+            // shrinkable: a 6ch+ minimum here would wrap the input onto a
+            // second line whenever the chip leaves less room than that —
+            // the value chip then sits pinned to the top of the input box
+            class="min-w-0 flex-1 border-0 bg-transparent p-0 outline-none"
             disabled={props.disabled}
             placeholder={sel().length === 0 ? props.placeholder : ""}
             value={query()}

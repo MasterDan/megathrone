@@ -5,21 +5,23 @@ import { Dynamic } from "solid-js/web";
 import { invoke } from "@tauri-apps/api/core";
 import {
   TbOutlineAlertTriangle,
-  TbOutlineInfoCircle,
+  TbOutlineGripVertical,
   TbOutlinePlus,
+  TbOutlineRadar,
   TbOutlineSettings,
   TbOutlineShieldLock,
   TbOutlineX,
 } from "solid-icons/tb";
 
-import { AboutModal } from "@/components/layout/AboutModal";
 import { CrownMark } from "@/components/common/CrownMark";
 import { ModeControls } from "@/components/home/ModeControls";
 import { AddProfileModal } from "@/components/profiles/AddProfileModal";
 import { useConnection } from "@/hooks/data/useConnection";
 import { useDpiStrategies } from "@/hooks/data/useDpi";
 import { useProfiles } from "@/hooks/data/useProfiles";
+import { useProfileOrder } from "@/hooks/useProfileOrder";
 import { proxyMode, selectedProfileId, selectProfile, setProxyMode } from "@/stores/session";
+import type { ProfileSummary } from "@/types";
 
 interface NavItem {
   href: string;
@@ -36,10 +38,11 @@ const NAV_ITEMS: NavItem[] = [
 
 /**
  * The desktop control column: brand, proxy mode + connect, DPI/Settings on
- * one row, then the profile list — clicking a profile opens its endpoints
- * page, the toggle on the row makes it the session profile (the one
- * Connect uses; live-switched while connected). The heart marks the
- * connected profile; the floating plus at the bottom adds a new one.
+ * one row, then the profile list. While connected, clicking a profile opens
+ * its endpoints page and the toggle on the row makes it the session profile
+ * (live-switched); while disconnected, a click does both — navigates and
+ * picks the profile Connect will use. The heart marks the connected
+ * profile; the floating plus at the bottom adds a new one.
  */
 export const DesktopSidebar: Component = () => {
   const location = useLocation();
@@ -48,7 +51,22 @@ export const DesktopSidebar: Component = () => {
   const connection = useConnection();
 
   const [adding, setAdding] = createSignal(false);
-  const [aboutOpen, setAboutOpen] = createSignal(false);
+
+  // the sidebar drags only its visible profiles, in the persisted order;
+  // a finished drag saves via profile_set_sidebar_order (the gear in the
+  // list header opens the full management tab in settings)
+  const { parent, ids } = useProfileOrder(
+    profiles,
+    () => void refetch(),
+    (profile) => profile.sidebarVisible,
+  );
+  const profilesById = createMemo(() => {
+    const map = new Map<number, ProfileSummary>();
+    for (const profile of profiles() ?? []) {
+      map.set(profile.id, profile);
+    }
+    return map;
+  });
 
   const connected = () => connection.snapshot()?.connected ?? false;
   const isActive = (href: string) => location.pathname.startsWith(href);
@@ -271,45 +289,86 @@ export const DesktopSidebar: Component = () => {
       <div class="mx-4 border-t border-base-content/10" aria-hidden="true" />
 
       <div class="min-h-0 flex-1 overflow-y-auto p-4 pt-3">
-        <p class="px-1 pb-2 text-[10px] font-semibold uppercase tracking-widest text-base-content/40">
-          Profiles
-        </p>
-        <div class="flex flex-col gap-0.5">
-          <For each={profiles() ?? []}>
-            {(profile) => (
-              <div
-                class="flex items-center gap-1.5 rounded-xl py-1 pl-3 pr-2 transition-colors"
-                classList={{
-                  "bg-base-content/10": profile.id === viewedProfileId(),
-                  "hover:bg-base-content/5": profile.id !== viewedProfileId(),
-                }}
-              >
-                <button
-                  type="button"
-                  class="min-w-0 flex-1 cursor-pointer py-1.5 text-left"
-                  title="Show this profile's endpoints"
-                  onClick={() => navigate(`/profiles/${profile.id}`)}
-                >
-                  <span class="block truncate text-sm font-medium" title={profile.name}>
-                    {profile.name}
-                  </span>
-                </button>
-                <input
-                  type="checkbox"
-                  class="toggle toggle-primary toggle-sm shrink-0"
-                  aria-label="Use this profile"
-                  title={
-                    profile.id === selectedProfileId()
-                      ? "Selected for connection"
-                      : "Use this profile"
-                  }
-                  checked={profile.id === selectedProfileId()}
-                  onChange={(event) => onToggleProfile(profile.id, event)}
-                />
-              </div>
+        <div class="flex items-center justify-between pb-2">
+          <p class="px-1 text-[10px] font-semibold uppercase tracking-widest text-base-content/40">
+            Profiles
+          </p>
+          <button
+            type="button"
+            class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-lg text-base-content/40 transition-colors hover:bg-base-content/10 hover:text-base-content"
+            title="Manage profiles — order, visibility, bulk delete"
+            aria-label="Manage profiles"
+            onClick={() => navigate("/settings?tab=profiles")}
+          >
+            <TbOutlineSettings size={14} />
+          </button>
+        </div>
+        <div class="flex flex-col gap-0.5" ref={parent}>
+          <For each={ids()}>
+            {(id) => (
+              <Show when={profilesById().get(id)} keyed>
+                {(profile) => (
+                  <div
+                    class="flex items-center gap-1 rounded-xl py-1 pl-1.5 pr-2 transition-colors"
+                    classList={{
+                      "bg-base-content/10": profile.id === viewedProfileId(),
+                      "hover:bg-base-content/5": profile.id !== viewedProfileId(),
+                    }}
+                  >
+                    <span
+                      class="drag-handle flex size-5 shrink-0 cursor-grab items-center justify-center rounded-md text-base-content/30 transition-colors hover:text-base-content/60 active:cursor-grabbing"
+                      title="Drag to reorder"
+                      aria-label={`Reorder ${profile.name}`}
+                    >
+                      <TbOutlineGripVertical size={14} />
+                    </span>
+                    <button
+                      type="button"
+                      class="min-w-0 flex-1 cursor-pointer py-1.5 text-left"
+                      title={
+                        connected()
+                          ? "Show this profile's endpoints"
+                          : "Show and select this profile"
+                      }
+                      onClick={() => {
+                        // disconnected: a click is also a pick — there is no
+                        // live session, so viewing and selecting collapse into
+                        // one action; while connected they stay separate (the
+                        // toggle does the picking, a click only navigates)
+                        if (!connected() && profile.id !== selectedProfileId()) {
+                          selectProfile(profile.id);
+                        }
+                        navigate(`/profiles/${profile.id}`);
+                      }}
+                    >
+                      <span class="block truncate text-sm font-medium" title={profile.name}>
+                        {profile.name}
+                      </span>
+                    </button>
+                    <input
+                      type="checkbox"
+                      class="toggle toggle-primary toggle-sm shrink-0"
+                      aria-label="Use this profile"
+                      title={
+                        profile.id === selectedProfileId()
+                          ? "Selected for connection"
+                          : "Use this profile"
+                      }
+                      checked={profile.id === selectedProfileId()}
+                      onChange={(event) => onToggleProfile(profile.id, event)}
+                    />
+                  </div>
+                )}
+              </Show>
             )}
           </For>
         </div>
+        <Show when={ids().length === 0 && (profiles()?.length ?? 0) > 0}>
+          <p class="rounded-xl bg-base-content/5 px-3 py-3 text-xs text-base-content/50">
+            All profiles are hidden from the sidebar — the gear above opens
+            the settings to bring them back.
+          </p>
+        </Show>
       </div>
 
       <div class="flex items-center gap-2 p-4 pt-2">
@@ -324,16 +383,15 @@ export const DesktopSidebar: Component = () => {
         <button
           type="button"
           class="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-base-content/10 text-base-content/70 transition-colors hover:bg-base-content/20 hover:text-base-content"
-          title="About"
-          aria-label="About"
-          onClick={() => setAboutOpen(true)}
+          title="Discovery"
+          aria-label="Discovery"
+          onClick={() => navigate("/discovery")}
         >
-          <TbOutlineInfoCircle size={16} />
+          <TbOutlineRadar size={18} />
         </button>
       </div>
 
       <AddProfileModal opened={adding} setOpened={setAdding} onDone={() => void refetch()} />
-      <AboutModal opened={aboutOpen} setOpened={setAboutOpen} />
     </aside>
   );
 };

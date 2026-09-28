@@ -17,6 +17,9 @@ const INTERVAL_ITEMS = [
 ];
 
 function sourceLabel(profile: ProfileSummary) {
+  if (profile.sourceDiscovery) {
+    return "Discovery";
+  }
   return profile.sourceUrl ?? profile.sourcePath ?? "";
 }
 
@@ -51,7 +54,9 @@ export const EditProfileModal: Component<Props> = (props) => {
   });
 
   const hasSource = () =>
+    !props.profile?.sourceDiscovery &&
     Boolean(props.profile?.sourceUrl || props.profile?.sourcePath);
+  const isDiscovery = () => Boolean(props.profile?.sourceDiscovery);
   const selectedInterval = () =>
     INTERVAL_ITEMS.find((item) => item.value === minutes());
 
@@ -162,64 +167,76 @@ export const EditProfileModal: Component<Props> = (props) => {
 
         <div class="form-control">
           <span class="label-text mb-1 block text-sm">Auto-update interval</span>
-          <div class="flex gap-2">
-            <div class="min-w-0 flex-1">
-              <ComboBox
-                search={(query) => {
-                  const needle = query.trim().toLowerCase();
-                  return needle
-                    ? INTERVAL_ITEMS.filter((item) => item.label.toLowerCase().includes(needle))
-                    : INTERVAL_ITEMS;
-                }}
-                getKey={(item) => item.value}
-                displayValue={(item) => item.label}
-                placeholder="Interval"
-                disabled={!hasSource() || busy()}
-                value={selectedInterval()}
-                onChange={(item) => {
-                  if (item) {
-                    setMinutes(item.value);
-                  }
-                }}
+          <Show
+            when={!isDiscovery()}
+            fallback={
+              <p class="text-xs text-base-content/50">
+                Managed by the Discovery catalog — run Discovery to refresh this profile.
+              </p>
+            }
+          >
+            <div class="flex gap-2">
+              <div class="min-w-0 flex-1">
+                <ComboBox
+                  search={(query) => {
+                    const needle = query.trim().toLowerCase();
+                    return needle
+                      ? INTERVAL_ITEMS.filter((item) => item.label.toLowerCase().includes(needle))
+                      : INTERVAL_ITEMS;
+                  }}
+                  getKey={(item) => item.value}
+                  displayValue={(item) => item.label}
+                  placeholder="Interval"
+                  disabled={!hasSource() || busy()}
+                  value={selectedInterval()}
+                  onChange={(item) => {
+                    if (item) {
+                      setMinutes(item.value);
+                    }
+                  }}
+                >
+                  {(item, api) => (
+                    <button
+                      type="button"
+                      class="w-full rounded-lg px-3 py-2 text-left"
+                      classList={{ "bg-base-200": api.selected() }}
+                      onClick={api.select}
+                    >
+                      {item.label}
+                    </button>
+                  )}
+                </ComboBox>
+              </div>
+              <Button
+                outline
+                class="shrink-0 gap-1"
+                disabled={!hasSource() || updating()}
+                title={
+                  updating()
+                    ? "Updating…"
+                    : hasSource()
+                      ? "Fetch the profile now"
+                      : "No source to update from"
+                }
+                onClick={() => void updateNow()}
               >
-                {(item, api) => (
-                  <button
-                    type="button"
-                    class="w-full rounded-lg px-3 py-2 text-left"
-                    classList={{ "bg-base-200": api.selected() }}
-                    onClick={api.select}
-                  >
-                    {item.label}
-                  </button>
-                )}
-              </ComboBox>
+                <Show when={!updating()} fallback={<span class="loading loading-spinner loading-xs" />}>
+                  <TbOutlineRefresh size={16} />
+                </Show>
+                Update now
+              </Button>
             </div>
-            <Button
-              outline
-              class="shrink-0 gap-1"
-              disabled={!hasSource() || updating()}
-              title={
-                updating()
-                  ? "Updating…"
-                  : hasSource()
-                    ? "Fetch the profile now"
-                    : "No source to update from"
-              }
-              onClick={() => void updateNow()}
-            >
-              <Show when={!updating()} fallback={<span class="loading loading-spinner loading-xs" />}>
-                <TbOutlineRefresh size={16} />
-              </Show>
-              Update now
-            </Button>
-          </div>
+          </Show>
         </div>
 
         <Show when={props.profile} keyed>
           {(profile) => (
             <p class="text-xs text-base-content/50">
-              Last updated: {formatRelativeTime(profile.lastFetchedAt)}. While the app is closed
-              time keeps running, so an elapsed interval triggers a refresh on the next launch.
+              Last updated: {formatRelativeTime(profile.lastFetchedAt)}.
+              <Show when={!profile.sourceDiscovery}>
+                {" "}While the app is closed time keeps running, so an elapsed interval triggers a
+                refresh on the next launch.
+              </Show>
             </p>
           )}
         </Show>
