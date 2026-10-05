@@ -15,13 +15,12 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, Manager};
 
 use super::registry::{TestGuard, advance_test, begin_test};
 use super::storage::store_strategy_results;
-use crate::AppState;
 use crate::connection;
 use crate::dpi;
+use crate::env;
 use crate::latency;
 use crate::routing;
 use crate::sites;
@@ -74,9 +73,9 @@ pub struct DpiTestSummary {
 /// sing-box pair at a time. Per-strategy results are stored and announced
 /// via `dpi-test-progress` as they arrive.
 #[tauri::command]
-pub async fn dpi_test_strategies(app: AppHandle) -> Result<DpiTestSummary, String> {
+pub async fn dpi_test_strategies() -> Result<DpiTestSummary, String> {
     let (strategies, site_list) = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
         (dpi::list_strategies(&conn)?, sites::flat_test_rules(&conn, routing::ACTION_DPI)?)
     };
@@ -117,8 +116,7 @@ pub async fn dpi_test_strategies(app: AppHandle) -> Result<DpiTestSummary, Strin
         if result.error.is_none() {
             let ok_ids: Vec<(i64, bool)> =
                 result.probes.iter().map(|(url_id, ok)| (*url_id, *ok)).collect();
-            let stored = app
-                .state::<AppState>()
+            let stored = env::state()
                 .db
                 .lock()
                 .map_err(|_| "database lock poisoned".to_string())
@@ -137,14 +135,14 @@ pub async fn dpi_test_strategies(app: AppHandle) -> Result<DpiTestSummary, Strin
         };
         done += 1;
         advance_test(done);
-        let _ = app.emit(
+        env::emit(
             DPI_TEST_PROGRESS_EVENT,
             DpiTestProgress { done, total, results: vec![announced] },
         );
     }
 
     let summary = DpiTestSummary { done, total };
-    let _ = app.emit(DPI_TEST_FINISHED_EVENT, &summary);
+    env::emit(DPI_TEST_FINISHED_EVENT, &summary);
     match failure {
         Some(error) => Err(error),
         None => Ok(summary),

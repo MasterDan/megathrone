@@ -3,11 +3,9 @@
 //! isolate-and-repick, the startup probe, the system proxy wiring and the
 //! session state claim.
 
-use tauri::{AppHandle, Emitter, Manager};
-
-use crate::AppState;
 use crate::auto_select;
 use crate::dpi;
+use crate::env;
 use crate::latency;
 use crate::profiles;
 use crate::routing;
@@ -42,7 +40,6 @@ use super::traffic::start_traffic_poller;
 /// proxy cannot be wired up.
 #[tauri::command]
 pub async fn connection_connect(
-    app: AppHandle,
     profile_id: i64,
     mode: String,
 ) -> Result<ConnectionSnapshot, String> {
@@ -88,7 +85,7 @@ pub async fn connection_connect(
     }
 
     let (profile_name, mut endpoint, auto_picked, routing, strategy, dpi_port, dpi_enabled, selection_mode, outbounds, mut untestable, general) = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
         let (profile_name, mut endpoint) = load_selected_endpoint(&conn, profile_id)?;
         let selection_mode = profiles::selection_mode(&conn, profile_id)?;
@@ -138,7 +135,7 @@ pub async fn connection_connect(
     let mut dpi_run = match (dpi_enabled, &strategy, routing::dpi_used(&routing)) {
         (false, _, _) => None,
         (_, Some(strategy), true) => {
-            Some(start_byedpi(&app, dpi_port, &strategy.args, &strategy.name).await?)
+            Some(start_byedpi(dpi_port, &strategy.args, &strategy.name).await?)
         }
         (_, None, true) if routing.fallback == routing::ACTION_DPI => {
             return Err(
@@ -217,7 +214,6 @@ pub async fn connection_connect(
         isolated = true;
         let selected_tag = endpoint.as_ref().map(|endpoint| endpoint.tag.clone());
         let (survivors, outcome) = match isolate_and_repick(
-            &app,
             profile_id,
             &selection_mode,
             manual_pick,
@@ -282,9 +278,9 @@ pub async fn connection_connect(
              the bake"
         );
         // the marked-dead rows and a new selection both show in the UI
-        profiles::after_mutation(&app, Some(profile_id), profiles::LATENCY);
+        profiles::after_mutation(Some(profile_id), profiles::LATENCY);
         if switched {
-            profiles::after_mutation(&app, Some(profile_id), profiles::SELECTION);
+            profiles::after_mutation(Some(profile_id), profiles::SELECTION);
         }
     }
     let config_arg = config_path.to_string_lossy().to_string();
@@ -351,7 +347,7 @@ pub async fn connection_connect(
     };
     // written before the state claim: a hard kill anywhere after the system
     // proxy is set must leave a trail for the next start to recover from
-    write_marker(&app, &running);
+    write_marker(&running);
     let snapshot = {
         let mut state = lock_state()?;
         state.last_error = None;
@@ -359,16 +355,16 @@ pub async fn connection_connect(
         snapshot_of(&state)
     };
 
-    spawn_watcher(app.clone(), events);
+    spawn_watcher(events);
     // live traffic charts feed on the clash API of the running instance
-    start_traffic_poller(&app, api_port);
+    start_traffic_poller(api_port);
     // Android: a foreground service keeps the session alive in background
     crate::mobile::set_foreground_service(true);
     // automatic strategies keep the live endpoint fed by a background
     // supervisor (scan pass → switch); manual selections run bare
     if selection_mode != profiles::SELECT_MANUAL {
-        auto_select::ensure(&app, profile_id);
+        auto_select::ensure(profile_id);
     }
-    let _ = app.emit(CONNECTION_CHANGED_EVENT, &snapshot);
+    env::emit(CONNECTION_CHANGED_EVENT, &snapshot);
     Ok(snapshot)
 }

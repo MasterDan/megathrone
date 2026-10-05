@@ -23,12 +23,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
 use super::passes::{apply_pass, ensure_selection, has_reachable_endpoint, run_pass_scan};
-use crate::AppState;
 use crate::connection;
+use crate::env;
 use crate::profiles;
 use crate::settings;
 
@@ -62,7 +61,7 @@ fn lock() -> Result<MutexGuard<'static, HashMap<i64, Supervisor>>, String> {
 /// for the same profile exits on its generation check; the fresh task
 /// re-reads the mode and session state at every loop top, so callers don't
 /// need to be precise about the current state.
-pub fn ensure(app: &AppHandle, profile_id: i64) {
+pub fn ensure(profile_id: i64) {
     let Ok(mut supervisors) = lock() else { return };
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
     // freshness carries over: a re-arm caused by a switch-restart must not
@@ -87,7 +86,6 @@ pub fn ensure(app: &AppHandle, profile_id: i64) {
         },
     );
     tauri::async_runtime::spawn(supervisor_loop(
-        app.clone(),
         profile_id,
         generation,
         notify,
@@ -137,7 +135,6 @@ pub(super) fn mark_pass_now(profile_id: i64) {
 }
 
 async fn supervisor_loop(
-    app: AppHandle,
     profile_id: i64,
     generation: u64,
     notify: Arc<Notify>,
@@ -152,7 +149,7 @@ async fn supervisor_loop(
         // exit when the strategy or the session no longer needs us; a
         // missing profile (deleted mid-run) also ends the task
         let mode = {
-            let Some(state) = app.try_state::<AppState>() else { return };
+            let state = env::state();
             let Ok(conn) = state.db.lock() else { return };
             match profiles::selection_mode(&conn, profile_id) {
                 Ok(mode) => mode,
@@ -165,14 +162,14 @@ async fn supervisor_loop(
 
         // a mode switch may have left the profile without a selection —
         // apply the strategy's pick right away, then keep it fed
-        ensure_selection(&app, profile_id, &mode).await;
+        ensure_selection(profile_id, &mode).await;
         if !is_current(profile_id, generation) {
             return;
         }
 
         // the cadences are settings — re-read them every iteration so live
         // edits apply without a reconnect
-        let (rotation_every, recheck_every) = load_intervals(&app);
+        let (rotation_every, recheck_every) = load_intervals();
         let scan_elapsed = clock_elapsed(&last_scan);
         let scan_due = scan_elapsed.is_none_or(|elapsed| elapsed >= recheck_every);
         let sticky_pending = sticky.load(Ordering::Relaxed);
@@ -202,11 +199,11 @@ async fn supervisor_loop(
         let mut scanned = false;
         if scan_due || sticky_pending {
             let sticky_pass = sticky.swap(false, Ordering::Relaxed);
-            run_pass_scan(&app, profile_id, sticky_pass).await;
+            run_pass_scan(profile_id, sticky_pass).await;
             if !is_current(profile_id, generation) {
                 return;
             }
-            apply_pass(&app, profile_id, generation, &mode, sticky_pass, false).await;
+            apply_pass(profile_id, generation, &mode, sticky_pass, false).await;
             set_clock(&last_scan);
             scanned = true;
         }
@@ -215,14 +212,14 @@ async fn supervisor_loop(
         // endpoint; with no reachable set known at all (never scanned,
         // everything died since), find one first
         if mode == profiles::SELECT_ROUND_ROBIN && rotate_due {
-            if !scanned && !has_reachable_endpoint(&app, profile_id) {
-                run_pass_scan(&app, profile_id, true).await;
+            if !scanned && !has_reachable_endpoint(profile_id) {
+                run_pass_scan(profile_id, true).await;
                 if !is_current(profile_id, generation) {
                     return;
                 }
                 set_clock(&last_scan);
             }
-            apply_pass(&app, profile_id, generation, &mode, false, true).await;
+            apply_pass(profile_id, generation, &mode, false, true).await;
             set_clock(&last_switch);
         }
     }
@@ -231,14 +228,14 @@ async fn supervisor_loop(
 /// The supervisor cadences (Settings → General): `(rotation, re-check)`.
 /// Falls back to the defaults on any read error — the supervisor must not
 /// die over a transient database hiccup.
-fn load_intervals(app: &AppHandle) -> (Duration, Duration) {
+fn load_intervals() -> (Duration, Duration) {
     let defaults = || {
         (
             Duration::from_secs(settings::DEFAULT_ROTATION_MINUTES.max(1) as u64 * 60),
             Duration::from_secs(settings::DEFAULT_RECHECK_MINUTES.max(1) as u64 * 60),
         )
     };
-    let Some(state) = app.try_state::<AppState>() else { return defaults() };
+    let state = env::state();
     let Ok(conn) = state.db.lock() else { return defaults() };
     match settings::load_general(&conn) {
         Ok(settings) => (

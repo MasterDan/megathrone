@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use rusqlite::params;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
 use super::clash::{TEST_TIMEOUT, url_test_chunk};
 use super::instance::{
@@ -11,7 +10,7 @@ use super::instance::{
     sidecar, tag_for, wait_for_api, write_config_file,
 };
 use super::storage::{apply_url_probes, db_err};
-use crate::AppState;
+use crate::env;
 use crate::profiles;
 use crate::routing;
 
@@ -29,13 +28,10 @@ pub struct EndpointUrlSummary {
 /// previous deep-probe results of the endpoint, exactly like a scan's deep
 /// probe would store them.
 #[tauri::command]
-pub async fn profile_test_endpoint_urls(
-    app: AppHandle,
-    item_id: i64,
-) -> Result<EndpointUrlSummary, String> {
+pub async fn profile_test_endpoint_urls(item_id: i64) -> Result<EndpointUrlSummary, String> {
     // snapshot: the endpoint's outbound, its profile, and the proxy test URLs
     let (profile_id, outbound, test_urls) = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
         let (profile_id, raw) = conn
             .query_row(
@@ -121,7 +117,7 @@ pub async fn profile_test_endpoint_urls(
     let url_total = probes.len();
     let url_ok = probes.iter().filter(|(_, _, delay)| delay.is_some()).count();
     {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
         // full replace: rows for URLs no longer probed must not linger
         conn.execute(
@@ -131,6 +127,6 @@ pub async fn profile_test_endpoint_urls(
         .map_err(db_err)?;
         apply_url_probes(&conn, &probes)?;
     }
-    profiles::after_mutation(&app, Some(profile_id), profiles::LATENCY);
+    profiles::after_mutation(Some(profile_id), profiles::LATENCY);
     Ok(EndpointUrlSummary { url_ok, url_total })
 }

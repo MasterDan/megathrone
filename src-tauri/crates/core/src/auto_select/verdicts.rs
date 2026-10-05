@@ -1,7 +1,5 @@
-use tauri::{AppHandle, Manager};
-
-use crate::AppState;
 use crate::connection;
+use crate::env;
 use crate::profiles;
 
 /// Fastest (and the most-available latency tie-break) only switches when
@@ -19,9 +17,9 @@ const FASTEST_HYSTERESIS_MS: i64 = 50;
 /// strategies take their pick). A reachable current is left alone — the
 /// pass's regular verdict applies when the scan finishes; manual mode and
 /// disconnected profiles are never touched.
-pub async fn rescue(app: &AppHandle, profile_id: i64) {
+pub async fn rescue(profile_id: i64) {
     let picked = {
-        let Some(state) = app.try_state::<AppState>() else { return };
+        let state = env::state();
         let Ok(conn) = state.db.lock() else { return };
         let Ok(mode) = profiles::selection_mode(&conn, profile_id) else { return };
         if mode == profiles::SELECT_MANUAL || !connection::runs_profile(profile_id) {
@@ -44,8 +42,8 @@ pub async fn rescue(app: &AppHandle, profile_id: i64) {
     };
     if let Some(tag) = picked {
         eprintln!("[auto-select] profile {profile_id}: rescued onto {tag} mid-scan");
-        profiles::after_mutation(app, Some(profile_id), profiles::SELECTION);
-        let _ = connection::switch_endpoint_if_running(app.clone(), profile_id).await;
+        profiles::after_mutation(Some(profile_id), profiles::SELECTION);
+        let _ = connection::switch_endpoint_if_running(profile_id).await;
     }
 }
 

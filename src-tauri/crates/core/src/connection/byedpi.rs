@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tauri::async_runtime::Receiver;
-use tauri::{AppHandle, Emitter};
 
+use crate::env;
 use crate::process::{CommandChild, CommandEvent};
 
 use super::startup::tail;
@@ -44,7 +44,6 @@ pub(super) fn abort_dpi(dpi: Option<DpiRunning>) {
 /// owns `-i`/`-p`, the strategy line is validated against them in `dpi.rs`).
 /// Ready once the port accepts a TCP connection.
 pub(super) async fn start_byedpi(
-    app: &AppHandle,
     port: u16,
     args: &str,
     strategy_name: &str,
@@ -68,7 +67,7 @@ pub(super) async fn start_byedpi(
     match outcome {
         Ok(()) => {
             let events = receiver.expect("a ready probe hands the receiver back");
-            spawn_dpi_watcher(app.clone(), events, deliberate.clone(), strategy_name.to_string());
+            spawn_dpi_watcher(events, deliberate.clone(), strategy_name.to_string());
             Ok(DpiRunning {
                 child,
                 port,
@@ -175,7 +174,6 @@ fn wait_out_death_grace(events: &mut Receiver<CommandEvent>, stderr: &mut Vec<u8
 /// Deliberate kills (disconnect/reconnect) are marked on `deliberate` and
 /// stay silent.
 fn spawn_dpi_watcher(
-    app: AppHandle,
     mut events: Receiver<CommandEvent>,
     deliberate: Arc<AtomicBool>,
     strategy: String,
@@ -191,7 +189,7 @@ fn spawn_dpi_watcher(
                 }
                 CommandEvent::Terminated(_) => {
                     if !deliberate.load(Ordering::Relaxed) {
-                        report_dpi_exit(&app, &strategy, tail(&stderr));
+                        report_dpi_exit(&strategy, tail(&stderr));
                     }
                     break;
                 }
@@ -201,7 +199,7 @@ fn spawn_dpi_watcher(
     });
 }
 
-fn report_dpi_exit(app: &AppHandle, strategy: &str, reason: String) {
+fn report_dpi_exit(strategy: &str, reason: String) {
     let message = if reason.is_empty() {
         format!(
             "the DPI tunnel (strategy {strategy:?}) exited unexpectedly — DPI routes no \
@@ -226,5 +224,5 @@ fn report_dpi_exit(app: &AppHandle, strategy: &str, reason: String) {
             ..ConnectionSnapshot::default()
         },
     };
-    let _ = app.emit(CONNECTION_CHANGED_EVENT, &snapshot);
+    env::emit(CONNECTION_CHANGED_EVENT, &snapshot);
 }

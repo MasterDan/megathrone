@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "web-terminate",
+      "type": "command",
+      "command": "workbench.action.tasks.terminate",
+      "args": "terminateAll"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "web: vite dev",
+      "type": "process",
+      "command": "pnpm",
+      "args": ["--filter", "@megathrone/web", "dev"],
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "VITE|vite",
+          "endsPattern": "ready in|Local:|network:"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "panelId": "web-vite-dev",
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "web: kill all",
+      "type": "shell",
+      "command": "echo ${input:web-terminate}",
+      "problemMatcher": []
+    }
+  ]
+}

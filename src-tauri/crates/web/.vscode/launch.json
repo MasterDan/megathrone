@@ -4,18 +4,48 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "megathrone-web: Debug (F5)",
+      "name": "web: server (lldb)",
       "cargo": {
-        "args": ["build", "-p", "megathrone-web"],
-        "filter": { "name": "megathrone-web", "kind": "bin" }
+        "args": [
+          "build",
+          "-p",
+          "megathrone-web"
+        ],
+        "filter": {
+          "name": "megathrone-web",
+          "kind": "bin"
+        }
       },
-      "args": ["--port", "8420"],
+      "args": [
+        "--port",
+        "8420"
+      ],
       "cwd": "${workspaceFolder}",
       "env": {
         "RUST_LOG": "info",
-        "RUST_BACKTRACE": "1"
+        "RUST_BACKTRACE": "1",
+        "MEGATHRONE_SIDECAR_DIR": "${workspaceFolder}/../../binaries"
       },
+      "postDebugTask": "web: kill all",
       "terminal": "integrated"
+    },
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "web: frontend (chrome)",
+      "url": "http://localhost:1421",
+      "webRoot": "${workspaceFolder}/../../../packages/web",
+      "runtimeExecutable": "/usr/bin/google-chrome-stable",
+      "preLaunchTask": "web: vite dev"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "megathrone-web: Debug (F5)",
+      "configurations": [
+        "web: server (lldb)",
+        "web: frontend (chrome)"
+      ]
     }
   ]
 }

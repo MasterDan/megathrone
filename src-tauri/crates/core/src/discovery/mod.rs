@@ -21,7 +21,7 @@ mod storage;
 pub use commands::*;
 pub use run::run_if_due;
 pub use seed::seed_discovery_sources;
-pub use settings::next_due_seconds;
+pub use settings::{DiscoverySettings, next_due_seconds};
 
 #[cfg(test)]
 mod filter_tests;

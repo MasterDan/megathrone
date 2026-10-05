@@ -1,61 +1,58 @@
+use std::sync::Arc;
+
 use rusqlite::Connection;
-use tauri::{AppHandle, Manager, State};
 
 use super::model::{DiscoveryRunStatus, DiscoverySource};
 use super::run;
 use super::settings::DiscoverySettings;
 use super::storage;
-use crate::profiles;
 use crate::AppState;
+use crate::env;
+use crate::profiles;
 
 // ---------------------------------------------------------------------------
 // Tauri commands (thin wrappers over the storage layer and the run)
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn discovery_sources_list(state: State<AppState>) -> Result<Vec<DiscoverySource>, String> {
+pub fn discovery_sources_list() -> Result<Vec<DiscoverySource>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     storage::list_sources(&conn)
 }
 
 #[tauri::command]
 pub fn discovery_source_add(
-    _app: AppHandle,
-    state: State<AppState>,
     url: String,
     name: Option<String>,
     merge_group: Option<String>,
 ) -> Result<DiscoverySource, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     storage::add_source(&conn, &url, name.as_deref(), merge_group.as_deref())
 }
 
 #[tauri::command]
 pub fn discovery_source_update(
-    _app: AppHandle,
-    state: State<AppState>,
     id: i64,
     url: Option<String>,
     name: Option<String>,
     enabled: Option<bool>,
 ) -> Result<DiscoverySource, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     storage::update_source(&conn, id, url, name, enabled)
 }
 
 #[tauri::command]
-pub fn discovery_source_delete(
-    app: AppHandle,
-    state: State<AppState>,
-    id: i64,
-    delete_profile: bool,
-) -> Result<(), String> {
+pub fn discovery_source_delete(id: i64, delete_profile: bool) -> Result<(), String> {
     let deleted_profile = {
+        let state = env::state();
         let conn = lock_db(&state)?;
         storage::delete_source(&conn, id, delete_profile)?
     };
     if let Some(profile_id) = deleted_profile {
-        profiles::after_mutation(&app, Some(profile_id), profiles::META);
+        profiles::after_mutation(Some(profile_id), profiles::META);
     }
     Ok(())
 }
@@ -63,17 +60,14 @@ pub fn discovery_source_delete(
 /// Removes a whole merge group (all its member sources) with the shared
 /// profile.
 #[tauri::command]
-pub fn discovery_source_delete_group(
-    app: AppHandle,
-    state: State<AppState>,
-    group: String,
-) -> Result<(), String> {
+pub fn discovery_source_delete_group(group: String) -> Result<(), String> {
     let deleted_profile = {
+        let state = env::state();
         let conn = lock_db(&state)?;
         storage::delete_group(&conn, &group)?
     };
     if let Some(profile_id) = deleted_profile {
-        profiles::after_mutation(&app, Some(profile_id), profiles::META);
+        profiles::after_mutation(Some(profile_id), profiles::META);
     }
     Ok(())
 }
@@ -81,8 +75,8 @@ pub fn discovery_source_delete_group(
 /// Starts a background discovery run; returns immediately. One run at a
 /// time — a second attempt while one is active errors out.
 #[tauri::command]
-pub fn discovery_run(app: AppHandle, test_after: bool) -> Result<(), String> {
-    run::start_run(app, test_after)
+pub fn discovery_run(test_after: bool) -> Result<(), String> {
+    run::start_run(test_after)
 }
 
 /// Snapshot of the current (or last finished) run; `None` before the first
@@ -100,7 +94,8 @@ pub fn discovery_run_cancel() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn discovery_get_settings(state: State<AppState>) -> Result<DiscoverySettings, String> {
+pub fn discovery_get_settings() -> Result<DiscoverySettings, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     super::settings::load(&conn)
 }
@@ -109,20 +104,18 @@ pub fn discovery_get_settings(state: State<AppState>) -> Result<DiscoverySetting
 /// auto-update interval) and re-arms the scheduler — a freshly set
 /// interval may already be due.
 #[tauri::command]
-pub fn discovery_set_settings(
-    app: AppHandle,
-    state: State<AppState>,
-    settings: DiscoverySettings,
-) -> Result<DiscoverySettings, String> {
+pub fn discovery_set_settings(settings: DiscoverySettings) -> Result<DiscoverySettings, String> {
     {
+        let state = env::state();
         let conn = lock_db(&state)?;
         super::settings::save(&conn, &settings)?;
     }
-    app.state::<AppState>().notify_auto_update();
+    env::state().notify_auto_update();
+    let state = env::state();
     let conn = lock_db(&state)?;
     super::settings::load(&conn)
 }
 
-fn lock_db<'a>(state: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
+fn lock_db(state: &Arc<AppState>) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
     state.db.lock().map_err(|_| "database lock poisoned".to_string())
 }

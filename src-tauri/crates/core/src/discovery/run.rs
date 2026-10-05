@@ -20,17 +20,16 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{Connection, params};
-use tauri::{AppHandle, Emitter, Manager};
 
 use super::filter::{dedup_endpoints, filter_lines};
 use super::model::{DiscoveryProgress, DiscoveryRunStatus, DISCOVERY_PROGRESS_EVENT};
 use super::settings::KEY_LAST_RUN_AT;
 use super::storage::{db_err, normalize_discovery_order};
 use crate::db::set_setting;
+use crate::env;
 use crate::latency::{self, ScanScope};
 use crate::parser::{self, NewEndpoint};
 use crate::profiles;
-use crate::AppState;
 
 /// Concurrent source fetches per run.
 const FETCH_CONCURRENCY: usize = 8;
@@ -95,7 +94,7 @@ pub(super) fn request_cancel() -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn start_run(app: AppHandle, test_after: bool) -> Result<(), String> {
+pub(super) fn start_run(test_after: bool) -> Result<(), String> {
     let cancel = {
         let mut run = lock_run()?;
         if run.as_ref().is_some_and(|state| state.active) {
@@ -121,7 +120,7 @@ pub(super) fn start_run(app: AppHandle, test_after: bool) -> Result<(), String> 
         cancel
     };
     tauri::async_runtime::spawn(async move {
-        execute_run(app, test_after, cancel).await;
+        execute_run(test_after, cancel).await;
     });
     Ok(())
 }
@@ -133,9 +132,9 @@ pub(super) fn start_run(app: AppHandle, test_after: bool) -> Result<(), String> 
 /// `Ok(None)` — nothing scheduled, not yet due, or a run already in
 /// progress; any other start failure counts into the scheduler's
 /// backoff.
-pub fn run_if_due(app: &AppHandle) -> Result<Option<i64>, String> {
+pub fn run_if_due() -> Result<Option<i64>, String> {
     let (due, settings) = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state
             .db
             .lock()
@@ -151,7 +150,7 @@ pub fn run_if_due(app: &AppHandle) -> Result<Option<i64>, String> {
     if !matches!(due, Some(seconds) if seconds <= 0.0) {
         return Ok(None);
     }
-    match start_run(app.clone(), settings.test_after) {
+    match start_run(settings.test_after) {
         Ok(()) => Ok(Some(interval)),
         Err(error) if error == ALREADY_RUNNING => Ok(None),
         Err(error) => Err(error),
@@ -191,16 +190,16 @@ struct FetchOutcome {
     touched: Vec<(i64, i64, String)>,
 }
 
-async fn execute_run(app: AppHandle, test_after: bool, cancel: Arc<AtomicBool>) {
-    let sources = match read_sources(&app) {
+async fn execute_run(test_after: bool, cancel: Arc<AtomicBool>) {
+    let sources = match read_sources() {
         Ok(sources) => sources,
         Err(error) => {
             eprintln!("[discovery] failed to read the enabled sources: {error}");
             Vec::new()
         }
     };
-    let started_at = sqlite_now(&app);
-    record_last_run_at(&app, &started_at);
+    let started_at = sqlite_now();
+    record_last_run_at(&started_at);
     update_run(|state| {
         state.status.started_at = started_at;
         state.status.total = storage_units(&sources);
@@ -208,13 +207,13 @@ async fn execute_run(app: AppHandle, test_after: bool, cancel: Arc<AtomicBool>) 
 
     let mut outcome = FetchOutcome::default();
     if !sources.is_empty() {
-        outcome = fetch_phase(&app, sources, &cancel).await;
+        outcome = fetch_phase(sources, &cancel).await;
         if outcome.created > 0 {
-            normalize_created_order(&app);
+            normalize_created_order();
         }
         if test_after && !cancel.load(Ordering::Relaxed) {
             update_run(|state| state.status.phase = PHASE_TESTING);
-            testing_phase(&app, std::mem::take(&mut outcome.touched), &cancel).await;
+            testing_phase(std::mem::take(&mut outcome.touched), &cancel).await;
         }
     }
 
@@ -225,7 +224,7 @@ async fn execute_run(app: AppHandle, test_after: bool, cancel: Arc<AtomicBool>) 
         state.status.test_profile_id = None;
         state.status.test_profile_name = None;
     });
-    let _ = app.emit(
+    env::emit(
         DISCOVERY_PROGRESS_EVENT,
         DiscoveryProgress::Finished {
             created: outcome.created,
@@ -241,13 +240,12 @@ async fn execute_run(app: AppHandle, test_after: bool, cancel: Arc<AtomicBool>) 
 /// profiles go to the tail of the sidebar in their source's position
 /// order, every other profile keeps its relative order ahead of them.
 /// Non-fatal — on failure the sidebar just keeps the completion order.
-fn normalize_created_order(app: &AppHandle) {
-    let normalized = app.try_state::<AppState>().and_then(|state| {
-        let conn = state.db.lock().ok()?;
+fn normalize_created_order() {
+    let normalized = env::state().db.lock().ok().and_then(|conn| {
         normalize_discovery_order(&conn).ok()
     });
     match normalized {
-        Some(()) => profiles::after_mutation(app, None, profiles::META),
+        Some(()) => profiles::after_mutation(None, profiles::META),
         None => eprintln!("[discovery] failed to normalize the created profiles' order"),
     }
 }
@@ -256,7 +254,6 @@ fn normalize_created_order(app: &AppHandle) {
 /// they arrive (completion order). A merge group's members buffer until
 /// the whole group arrived, then store as one shared profile.
 async fn fetch_phase(
-    app: &AppHandle,
     sources: Vec<SourceJob>,
     cancel: &Arc<AtomicBool>,
 ) -> FetchOutcome {
@@ -272,7 +269,6 @@ async fn fetch_phase(
 
     for source in sources {
         let semaphore = semaphore.clone();
-        let worker_app = app.clone();
         let worker_cancel = cancel.clone();
         let worker_tx = tx.clone();
         tauri::async_runtime::spawn(async move {
@@ -283,7 +279,7 @@ async fn fetch_phase(
             let result = if worker_cancel.load(Ordering::Relaxed) {
                 Err("cancelled".to_string())
             } else {
-                let _ = worker_app.emit(
+                env::emit(
                     DISCOVERY_PROGRESS_EVENT,
                     DiscoveryProgress::SourceStarted {
                         source_id: source.id,
@@ -315,15 +311,15 @@ async fn fetch_phase(
             Err(error) => Err(error),
         };
         let Some(group) = source.merge_group.clone() else {
-            process_single_source(app, &mut outcome, source, parsed).await;
+            process_single_source(&mut outcome, source, parsed).await;
             continue;
         };
-        record_source_outcome(app, &mut outcome, &source, &parsed);
+        record_source_outcome(&mut outcome, &source, &parsed);
         let batch = pending_groups.entry(group.clone()).or_default();
         batch.push((source, parsed));
         if batch.len() == expected[&group] {
             let batch = pending_groups.remove(&group).expect("the batch was just inserted");
-            store_group(app, &mut outcome, group.clone(), batch).await;
+            store_group(&mut outcome, group.clone(), batch).await;
         }
     }
     outcome
@@ -376,7 +372,6 @@ enum StoredSource {
 /// The ungrouped path: one source's parsed result straight into its own
 /// profile (the single-member case of the shared store).
 async fn process_single_source(
-    app: &AppHandle,
     outcome: &mut FetchOutcome,
     source: SourceJob,
     parsed: ParsedSource,
@@ -389,9 +384,8 @@ async fn process_single_source(
         Ok((endpoints, native_config)) => {
             item_count = endpoints.len();
             let members = vec![(source, item_count)];
-            let app = app.clone();
             match tauri::async_runtime::spawn_blocking(move || {
-                store_members_result(&app, members, endpoints, native_config)
+                store_members_result(members, endpoints, native_config)
             })
             .await
             {
@@ -410,8 +404,8 @@ async fn process_single_source(
                 state.status.done += 1;
                 state.status.failed += 1;
             });
-            record_source_error(app, source_id, &error);
-            let _ = app.emit(
+            record_source_error(source_id, &error);
+            env::emit(
                 DISCOVERY_PROGRESS_EVENT,
                 DiscoveryProgress::SourceDone {
                     source_id,
@@ -425,8 +419,8 @@ async fn process_single_source(
         }
     };
 
-    finish_stored_source(app, outcome, source_position, source_name.clone(), stored);
-    let _ = app.emit(
+    finish_stored_source(outcome, source_position, source_name.clone(), stored);
+    env::emit(
         DISCOVERY_PROGRESS_EVENT,
         DiscoveryProgress::SourceDone {
             source_id,
@@ -444,14 +438,13 @@ async fn process_single_source(
 /// the SourceDone event. The profile write happens once the whole group
 /// arrived (`store_group`).
 fn record_source_outcome(
-    app: &AppHandle,
     outcome: &mut FetchOutcome,
     source: &SourceJob,
     parsed: &ParsedSource,
 ) {
     match parsed {
         Ok((endpoints, _)) => {
-            let _ = app.emit(
+            env::emit(
                 DISCOVERY_PROGRESS_EVENT,
                 DiscoveryProgress::SourceDone {
                     source_id: source.id,
@@ -465,8 +458,8 @@ fn record_source_outcome(
         Err(error) => {
             outcome.failed += 1;
             update_run(|state| state.status.failed += 1);
-            record_source_error(app, source.id, error);
-            let _ = app.emit(
+            record_source_error(source.id, error);
+            env::emit(
                 DISCOVERY_PROGRESS_EVENT,
                 DiscoveryProgress::SourceDone {
                     source_id: source.id,
@@ -484,7 +477,6 @@ fn record_source_outcome(
 /// Every member failed → nothing to store (each row already carries its
 /// own error), the unit still completes.
 async fn store_group(
-    app: &AppHandle,
     outcome: &mut FetchOutcome,
     group: String,
     batch: Vec<(SourceJob, ParsedSource)>,
@@ -498,7 +490,7 @@ async fn store_group(
         .unwrap_or_default();
     let Some((members, endpoints, native_config)) = assemble_group(batch) else {
         update_run(|state| state.status.done += 1);
-        let _ = app.emit(
+        env::emit(
             DISCOVERY_PROGRESS_EVENT,
             DiscoveryProgress::GroupDone {
                 group,
@@ -513,43 +505,39 @@ async fn store_group(
     let owner_position = members[0].0.position;
     let item_count = endpoints.len();
     let member_ids: Vec<i64> = members.iter().map(|(job, _)| job.id).collect();
-    let result = {
-        let app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            store_members_result(&app, members, endpoints, native_config)
-        })
-        .await
-    };
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        store_members_result(members, endpoints, native_config)
+    })
+    .await;
     match result {
         Ok(stored) => {
             let stored = match stored {
                 Ok(stored) => stored,
                 Err(error) => {
-                    record_store_error(app, &member_ids, &error, outcome);
-                    emit_group_done(app, &group, &owner_name, false, 0, Some(&error));
+                    record_store_error(&member_ids, &error, outcome);
+                    emit_group_done(&group, &owner_name, false, 0, Some(&error));
                     return;
                 }
             };
-            finish_stored_source(app, outcome, owner_position, owner_name.clone(), stored);
-            emit_group_done(app, &group, &owner_name, true, item_count, None);
+            finish_stored_source(outcome, owner_position, owner_name.clone(), stored);
+            emit_group_done(&group, &owner_name, true, item_count, None);
         }
         Err(error) => {
             let error = format!("discovery task failed: {error}");
-            record_store_error(app, &member_ids, &error, outcome);
-            emit_group_done(app, &group, &owner_name, false, 0, Some(&error));
+            record_store_error(&member_ids, &error, outcome);
+            emit_group_done(&group, &owner_name, false, 0, Some(&error));
         }
     }
 }
 
 fn emit_group_done(
-    app: &AppHandle,
     group: &str,
     name: &str,
     ok: bool,
     item_count: usize,
     error: Option<&str>,
 ) {
-    let _ = app.emit(
+    env::emit(
         DISCOVERY_PROGRESS_EVENT,
         DiscoveryProgress::GroupDone {
             group: group.to_string(),
@@ -565,7 +553,6 @@ fn emit_group_done(
 /// unit completes failed, every member row carries the error so the UI
 /// shows it after the refetch.
 fn record_store_error(
-    app: &AppHandle,
     member_ids: &[i64],
     error: &str,
     outcome: &mut FetchOutcome,
@@ -576,7 +563,7 @@ fn record_store_error(
         state.status.failed += 1;
     });
     for id in member_ids {
-        record_source_error(app, *id, error);
+        record_source_error(*id, error);
     }
     eprintln!("[discovery] failed to store a merge group: {error}");
 }
@@ -586,7 +573,6 @@ fn record_store_error(
 /// plus the silent live-session rebuild on a set change (like the
 /// scheduler's). Progress events stay with the per-URL outcomes.
 fn finish_stored_source(
-    app: &AppHandle,
     outcome: &mut FetchOutcome,
     source_position: i64,
     source_name: String,
@@ -609,7 +595,6 @@ fn finish_stored_source(
             if set_changed {
                 // silent, like the scheduler's rebuilds
                 tauri::async_runtime::spawn(profiles::rebuild_session_after_update(
-                    app.clone(),
                     profile_id,
                     true,
                     false,
@@ -654,7 +639,6 @@ fn assemble_group(batch: Vec<(SourceJob, ParsedSource)>) -> Option<AssembledGrou
 /// the profile (its name, its link); each member row records its own
 /// endpoint count.
 fn store_members_result(
-    app: &AppHandle,
     members: Vec<(SourceJob, usize)>,
     endpoints: Vec<NewEndpoint>,
     native_config: bool,
@@ -665,14 +649,14 @@ fn store_members_result(
     // a dangling link (the profile was deleted elsewhere) imports afresh
     let existing = owner
         .profile_id
-        .filter(|&profile_id| profile_still_exists(app, profile_id));
+        .filter(|&profile_id| profile_still_exists(profile_id));
     if let Some(profile_id) = existing {
         // a running scan works off a snapshot of the endpoint rows; stop it
         // before the diff rewrites them (it exits between batches)
         latency::cancel_and_wait(profile_id, SCAN_CANCEL_TIMEOUT);
     }
 
-    let state = app.state::<AppState>();
+    let state = env::state();
     let mut conn = state
         .db
         .lock()
@@ -699,7 +683,7 @@ fn store_members_result(
         )
         .map_err(db_err)?;
     }
-    profiles::after_mutation(app, Some(profile_id), profiles::CONTENT);
+    profiles::after_mutation(Some(profile_id), profiles::CONTENT);
     // an automatic strategy re-picks over the fresh rows, keeping the
     // current endpoint while it survived the update
     crate::auto_select::content_updated(profile_id);
@@ -712,17 +696,15 @@ fn source_profile_id(stored: &StoredSource) -> i64 {
     }
 }
 
-fn record_source_error(app: &AppHandle, source_id: i64, error: &str) {
-    let recorded = app.try_state::<AppState>().and_then(|state| {
-        state.db.lock().ok().and_then(|conn| {
-            conn.execute(
-                "UPDATE discovery_sources
-                 SET last_run_at = datetime('now'), last_error = ?2, updated_at = datetime('now')
-                 WHERE id = ?1",
-                params![source_id, error],
-            )
-            .ok()
-        })
+fn record_source_error(source_id: i64, error: &str) {
+    let recorded = env::state().db.lock().ok().and_then(|conn| {
+        conn.execute(
+            "UPDATE discovery_sources
+             SET last_run_at = datetime('now'), last_error = ?2, updated_at = datetime('now')
+             WHERE id = ?1",
+            params![source_id, error],
+        )
+        .ok()
     });
     if recorded.is_none() {
         eprintln!("[discovery] failed to record the source error: {error}");
@@ -731,7 +713,7 @@ fn record_source_error(app: &AppHandle, source_id: i64, error: &str) {
 
 /// Runs the optional full-scope latency scan of every touched profile, one
 /// at a time in position order; a scan error just moves on to the next.
-async fn testing_phase(app: &AppHandle, touched: Vec<(i64, i64, String)>, cancel: &AtomicBool) {
+async fn testing_phase(touched: Vec<(i64, i64, String)>, cancel: &AtomicBool) {
     let mut order = touched;
     order.sort_by_key(|(position, _, _)| *position);
     for (_, profile_id, name) in order {
@@ -742,11 +724,11 @@ async fn testing_phase(app: &AppHandle, touched: Vec<(i64, i64, String)>, cancel
             state.status.test_profile_id = Some(profile_id);
             state.status.test_profile_name = Some(name.clone());
         });
-        let _ = app.emit(
+        env::emit(
             DISCOVERY_PROGRESS_EVENT,
             DiscoveryProgress::ScanStarted { profile_id, name: name.clone() },
         );
-        let _ = latency::run_scan(app, profile_id, ScanScope::All).await;
+        let _ = latency::run_scan(profile_id, ScanScope::All).await;
         update_run(|state| {
             state.status.test_profile_id = None;
             state.status.test_profile_name = None;
@@ -775,8 +757,8 @@ fn storage_units(sources: &[SourceJob]) -> usize {
     units + groups.len()
 }
 
-fn read_sources(app: &AppHandle) -> Result<Vec<SourceJob>, String> {
-    let state = app.state::<AppState>();
+fn read_sources() -> Result<Vec<SourceJob>, String> {
+    let state = env::state();
     let conn = state
         .db
         .lock()
@@ -804,17 +786,14 @@ fn read_sources(app: &AppHandle) -> Result<Vec<SourceJob>, String> {
     Ok(sources)
 }
 
-fn sqlite_now(app: &AppHandle) -> String {
-    app.try_state::<AppState>()
-        .and_then(|state| {
-            state
-                .db
-                .lock()
+fn sqlite_now() -> String {
+    env::state()
+        .db
+        .lock()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row("SELECT datetime('now')", [], |row| row.get::<_, String>(0))
                 .ok()
-                .and_then(|conn| {
-                    conn.query_row("SELECT datetime('now')", [], |row| row.get::<_, String>(0))
-                        .ok()
-                })
         })
         .unwrap_or_default()
 }
@@ -822,28 +801,21 @@ fn sqlite_now(app: &AppHandle) -> String {
 /// Stamps the KV key the scheduler's discovery wake is computed from —
 /// every run (manual or scheduled) refreshes it. Non-fatal: a failed
 /// stamp only skews the next scheduled run.
-fn record_last_run_at(app: &AppHandle, started_at: &str) {
-    let stamped = app.try_state::<AppState>().and_then(|state| {
-        state
-            .db
-            .lock()
-            .ok()
-            .and_then(|conn| set_setting(&conn, KEY_LAST_RUN_AT, started_at).ok())
+fn record_last_run_at(started_at: &str) {
+    let stamped = env::state().db.lock().ok().and_then(|conn| {
+        set_setting(&conn, KEY_LAST_RUN_AT, started_at).ok()
     });
     if stamped.is_none() {
         eprintln!("[discovery] failed to stamp the last-run timestamp");
     }
 }
 
-fn profile_still_exists(app: &AppHandle, profile_id: i64) -> bool {
-    app.try_state::<AppState>()
-        .and_then(|state| {
-            state
-                .db
-                .lock()
-                .ok()
-                .map(|conn| profile_exists(&conn, profile_id))
-        })
+fn profile_still_exists(profile_id: i64) -> bool {
+    env::state()
+        .db
+        .lock()
+        .ok()
+        .map(|conn| profile_exists(&conn, profile_id))
         .unwrap_or(false)
 }
 

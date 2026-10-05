@@ -3,9 +3,9 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rusqlite::{params, Connection};
-use tauri::{AppHandle, Emitter, Manager};
 
 use crate::connection;
+use crate::env;
 use crate::latency;
 use crate::parser::{self, ParsedProfile};
 use crate::AppState;
@@ -54,7 +54,6 @@ pub enum UpdateTrigger {
 /// whether the update was clicked or scheduled; every phase also goes out
 /// as a global `profile-update` notice (started / success / error).
 pub fn update_profile_flow(
-    app: &AppHandle,
     profile_id: i64,
     trigger: UpdateTrigger,
 ) -> Result<UpdateOutcome, String> {
@@ -62,26 +61,23 @@ pub fn update_profile_flow(
         updates.insert(profile_id);
     }
     let _guard = UpdateGuard(profile_id);
-    after_mutation(app, Some(profile_id), UPDATING);
-    emit_update_notice(app, profile_id, UPDATE_NOTICE_STARTED, None);
-    let result = fetch_and_apply_update(app, profile_id);
-    after_mutation(app, Some(profile_id), UPDATE_DONE);
+    after_mutation(Some(profile_id), UPDATING);
+    emit_update_notice(profile_id, UPDATE_NOTICE_STARTED, None);
+    let result = fetch_and_apply_update(profile_id);
+    after_mutation(Some(profile_id), UPDATE_DONE);
     match &result {
         Ok(outcome) => emit_update_notice(
-            app,
             profile_id,
             UPDATE_NOTICE_SUCCEEDED,
             Some(describe_diff(outcome)),
         ),
         Err(error) => {
             let message = if trigger == UpdateTrigger::Scheduler {
-                let failures = app
-                    .try_state::<AppState>()
-                    .and_then(|state| {
-                        state.db.lock().ok().and_then(|conn| {
-                            bump_auto_update_failures(&conn, profile_id).ok()
-                        })
-                    })
+                let failures = env::state()
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|conn| bump_auto_update_failures(&conn, profile_id).ok())
                     .unwrap_or(0);
                 if failures >= MAX_AUTO_UPDATE_FAILURES {
                     format!(
@@ -94,7 +90,7 @@ pub fn update_profile_flow(
             } else {
                 error.clone()
             };
-            emit_update_notice(app, profile_id, UPDATE_NOTICE_FAILED, Some(message));
+            emit_update_notice(profile_id, UPDATE_NOTICE_FAILED, Some(message));
         }
     }
     result
@@ -113,25 +109,24 @@ fn describe_diff(outcome: &UpdateOutcome) -> String {
 /// Emits one global update notification; the profile's display name rides
 /// along so the toast reads naturally for background updates.
 fn emit_update_notice(
-    app: &AppHandle,
     profile_id: i64,
     kind: &'static str,
     message: Option<String>,
 ) {
-    let profile_name = app
-        .try_state::<AppState>()
-        .and_then(|state| {
-            state.db.lock().ok().and_then(|conn| {
-                conn.query_row(
-                    "SELECT name FROM profiles WHERE id = ?1",
-                    params![profile_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok()
-            })
+    let profile_name = env::state()
+        .db
+        .lock()
+        .ok()
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT name FROM profiles WHERE id = ?1",
+                params![profile_id],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
         })
         .unwrap_or_else(|| format!("profile #{profile_id}"));
-    let _ = app.emit(
+    env::emit(
         PROFILE_UPDATE_EVENT,
         ProfileUpdateNotice { profile_id, profile_name, kind, message },
     );
@@ -142,14 +137,14 @@ fn emit_update_notice(
 /// cover the residual race).
 const SCAN_CANCEL_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn fetch_and_apply_update(app: &AppHandle, profile_id: i64) -> Result<UpdateOutcome, String> {
+fn fetch_and_apply_update(profile_id: i64) -> Result<UpdateOutcome, String> {
     // a running scan works off a start-of-scan snapshot of the endpoint
     // rows; stop it before the diff rewrites them (it exits between
     // batches, so the wait is bounded by one batch)
     latency::cancel_and_wait(profile_id, SCAN_CANCEL_TIMEOUT);
 
     let source = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = lock_db_ref(&state)?;
         load_source(&conn, profile_id)?
     };
@@ -160,12 +155,12 @@ fn fetch_and_apply_update(app: &AppHandle, profile_id: i64) -> Result<UpdateOutc
     };
 
     let outcome = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let mut conn = lock_db_ref(&state)?;
         apply_update(&mut conn, profile_id, &content)?
     };
 
-    after_mutation(app, Some(profile_id), CONTENT);
+    after_mutation(Some(profile_id), CONTENT);
     // an automatic strategy re-picks over the fresh rows, keeping the
     // current endpoint while it survived the update
     crate::auto_select::content_updated(profile_id);
@@ -178,7 +173,6 @@ fn fetch_and_apply_update(app: &AppHandle, profile_id: i64) -> Result<UpdateOutc
 /// toast; failures stay visible) from a background scheduler update
 /// (silent; failures land in `last_error`).
 pub async fn rebuild_session_after_update(
-    app: AppHandle,
     profile_id: i64,
     set_changed: bool,
     report: bool,
@@ -186,12 +180,12 @@ pub async fn rebuild_session_after_update(
     if !set_changed || !connection::runs_profile(profile_id) {
         return;
     }
-    match connection::restart_if_running(app.clone(), profile_id).await {
+    match connection::restart_if_running(profile_id).await {
         Ok(Some(tag)) if report => {
-            connection::emit_restart_result(&app, true, format!("profile updated — via {tag}"))
+            connection::emit_restart_result(true, format!("profile updated — via {tag}"))
         }
         Ok(_) => {}
-        Err(error) if report => connection::emit_restart_result(&app, false, error),
+        Err(error) if report => connection::emit_restart_result(false, error),
         Err(error) => {
             eprintln!(
                 "[auto-update] session rebuild after profile {profile_id} update failed: {error}"
@@ -385,8 +379,6 @@ impl Drop for UpdateGuard {
     }
 }
 
-fn lock_db_ref<'a>(
-    state: &'a tauri::State<'_, AppState>,
-) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
+fn lock_db_ref(state: &AppState) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
     state.db.lock().map_err(|_| "database lock poisoned".to_string())
 }

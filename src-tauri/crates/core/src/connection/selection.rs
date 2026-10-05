@@ -6,11 +6,10 @@ use std::collections::HashSet;
 
 use rusqlite::{Connection, params};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
+use crate::env;
 use crate::latency;
 use crate::profiles;
-use crate::AppState;
 
 use super::config::{BakedEndpoint, bake_endpoints};
 
@@ -164,7 +163,6 @@ pub(super) enum Repick {
 /// selection against the survivors (see `decide_repick`). Returns the
 /// rebaked survivors and the selection verdict.
 pub(super) async fn isolate_and_repick(
-    app: &AppHandle,
     profile_id: i64,
     mode: &str,
     manual_pick: bool,
@@ -176,11 +174,11 @@ pub(super) async fn isolate_and_repick(
         .iter()
         .map(|endpoint| (endpoint.id, endpoint.outbound.clone()))
         .collect();
-    let (loadable, mut broken) = latency::isolate_unloadable_outbounds(app, rows).await?;
+    let (loadable, mut broken) = latency::isolate_unloadable_outbounds(rows).await?;
     broken.extend(untestable);
     let loadable_ids: HashSet<i64> = loadable.iter().map(|(id, _)| *id).collect();
     let decision = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
         for id in &broken {
             conn.execute(

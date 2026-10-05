@@ -3,9 +3,8 @@ use std::collections::HashSet;
 use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
-use crate::AppState;
+use crate::env;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,11 +104,10 @@ pub(super) fn load_untested_ids(conn: &Connection, profile_id: i64) -> Result<Ha
 /// upserts, and stale URL rows cleanup for endpoints that failed the base
 /// probe (their previous scores are meaningless now).
 pub(super) fn store_batch(
-    app: &AppHandle,
     results: &[LatencyResult],
     url_probes: &[UrlProbe],
 ) -> Result<(), String> {
-    let state = app.state::<AppState>();
+    let state = env::state();
     let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
     apply_results(&conn, results)?;
     apply_url_probes(&conn, url_probes)?;

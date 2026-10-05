@@ -51,11 +51,10 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "disconnect" => {
-                let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     // errors land in the session state and come back as a
                     // `connection-changed` (lastError) — nothing to do here
-                    let _ = connection::connection_disconnect(app).await;
+                    let _ = connection::connection_disconnect().await;
                 });
             }
             // RunEvent::Exit fires and unwinds the session gracefully

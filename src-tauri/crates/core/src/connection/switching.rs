@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Manager};
 
-use crate::AppState;
+use crate::env;
 
 use super::connect::connection_connect;
 use super::selection::selected_endpoint_brief;
@@ -30,8 +29,8 @@ pub struct RestartResult {
 
 pub const RESTART_RESULT_EVENT: &str = "restart-result";
 
-pub fn emit_restart_result(app: &AppHandle, ok: bool, message: String) {
-    let _ = app.emit(RESTART_RESULT_EVENT, RestartResult { ok, message });
+pub fn emit_restart_result(ok: bool, message: String) {
+    env::emit(RESTART_RESULT_EVENT, RestartResult { ok, message });
 }
 
 /// Re-points the live session at another profile (the mode stays; the new
@@ -39,10 +38,7 @@ pub fn emit_restart_result(app: &AppHandle, ok: bool, message: String) {
 /// flow). Reports via `restart-result`. A no-op when the proxy is off or
 /// already runs this profile.
 #[tauri::command]
-pub async fn connection_switch_profile(
-    app: AppHandle,
-    profile_id: i64,
-) -> Result<ConnectionSnapshot, String> {
+pub async fn connection_switch_profile(profile_id: i64) -> Result<ConnectionSnapshot, String> {
     let current = {
         let _flow = FLOW.lock().await;
         lock_state().ok().and_then(|state| {
@@ -60,8 +56,8 @@ pub async fn connection_switch_profile(
     }
 
     let result = async {
-        connection_disconnect(app.clone()).await?;
-        connection_connect(app.clone(), profile_id, mode).await
+        connection_disconnect().await?;
+        connection_connect(profile_id, mode).await
     }
     .await;
     match result {
@@ -71,9 +67,9 @@ pub async fn connection_switch_profile(
                 (Some(name), None) => format!("switched to {name} — DPI only"),
                 _ => "switched profile".to_string(),
             };
-            emit_restart_result(&app, true, message);
+            emit_restart_result(true, message);
         }
-        Err(error) => emit_restart_result(&app, false, error),
+        Err(error) => emit_restart_result(false, error),
     }
     Ok(current_snapshot())
 }
@@ -87,10 +83,7 @@ pub async fn connection_switch_profile(
 /// themselves have already been persisted by the caller). Silent by
 /// design: user-initiated flows report through `emit_restart_result`
 /// themselves, background supervisor switches stay quiet.
-pub async fn restart_if_running(
-    app: AppHandle,
-    profile_id: i64,
-) -> Result<Option<String>, String> {
+pub async fn restart_if_running(profile_id: i64) -> Result<Option<String>, String> {
     let mode = {
         let _flow = FLOW.lock().await;
         lock_state().ok().and_then(|state| {
@@ -104,8 +97,8 @@ pub async fn restart_if_running(
     let Some(mode) = mode else { return Ok(None) };
 
     let result = async {
-        connection_disconnect(app.clone()).await?;
-        connection_connect(app.clone(), profile_id, mode)
+        connection_disconnect().await?;
+        connection_connect(profile_id, mode)
             .await
             .map(|fresh| fresh.endpoint_tag)
     }
@@ -117,7 +110,7 @@ pub async fn restart_if_running(
             if let Ok(mut state) = lock_state() {
                 state.last_error = Some(message.clone());
                 let snapshot = snapshot_of(&state);
-                let _ = app.emit(CONNECTION_CHANGED_EVENT, &snapshot);
+                env::emit(CONNECTION_CHANGED_EVENT, &snapshot);
             }
             Err(message)
         }
@@ -136,20 +129,16 @@ pub async fn restart_if_running(
 /// profile; `Err` — the fallback reconnect failed. Like
 /// `restart_if_running`, silent by design: callers report user-initiated
 /// switches through `emit_restart_result` themselves.
-pub async fn switch_endpoint_if_running(
-    app: AppHandle,
-    profile_id: i64,
-) -> Result<Option<String>, String> {
+pub async fn switch_endpoint_if_running(profile_id: i64) -> Result<Option<String>, String> {
     // (endpoint row id, display tag) of the stored selection; an unreadable
     // or cleared selection falls through to the reconnect path
-    let selection: Option<(i64, String)> = app
-        .state::<AppState>()
+    let selection: Option<(i64, String)> = env::state()
         .db
         .lock()
         .ok()
         .and_then(|conn| selected_endpoint_brief(&conn, profile_id).ok().flatten());
     let Some((id, display)) = selection else {
-        return restart_if_running(app, profile_id).await;
+        return restart_if_running(profile_id).await;
     };
     let live = lock_state().ok().and_then(|state| {
         let run = state.running.as_ref().filter(|run| run.profile_id == profile_id)?;
@@ -158,7 +147,7 @@ pub async fn switch_endpoint_if_running(
     // nothing runs for this profile (the reconnect is a no-op), or the
     // endpoint was never baked into the live config
     let Some((api_port, tag)) = live else {
-        return restart_if_running(app, profile_id).await;
+        return restart_if_running(profile_id).await;
     };
     let switched = match tauri::async_runtime::spawn_blocking(move || {
         select_on_clash_api(api_port, &tag)
@@ -177,14 +166,14 @@ pub async fn switch_endpoint_if_running(
                 }
                 snapshot_of(&state)
             };
-            let _ = app.emit(CONNECTION_CHANGED_EVENT, &snapshot);
+            env::emit(CONNECTION_CHANGED_EVENT, &snapshot);
             Ok(Some(display))
         }
         Err(error) => {
             eprintln!(
                 "[connection] live endpoint switch failed ({error}) — reconnecting instead"
             );
-            restart_if_running(app, profile_id).await
+            restart_if_running(profile_id).await
         }
     }
 }

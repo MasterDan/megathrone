@@ -18,7 +18,6 @@ use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
 
 use super::clash::{TEST_TIMEOUT, delay_test_chunk, url_test_chunk};
 use super::instance::{
@@ -29,7 +28,7 @@ use super::registry::{ScanGuard, advance_scan, begin_scan};
 use super::storage::{
     LatencyResult, UrlProbe, load_outbounds, load_reachable_ids, load_untested_ids, store_batch,
 };
-use crate::AppState;
+use crate::env;
 use crate::profiles;
 use crate::routing;
 
@@ -77,11 +76,8 @@ pub enum ScanScope {
 }
 
 #[tauri::command]
-pub async fn profile_check_latency(
-    app: AppHandle,
-    profile_id: i64,
-) -> Result<LatencySummary, String> {
-    run_scan(&app, profile_id, ScanScope::All).await
+pub async fn profile_check_latency(profile_id: i64) -> Result<LatencySummary, String> {
+    run_scan(profile_id, ScanScope::All).await
 }
 
 /// One whole-availability scan of a profile's endpoints. Shared by the
@@ -92,14 +88,13 @@ pub async fn profile_check_latency(
 /// passes). Returns an error when another scan for the profile is already in
 /// flight (`begin_scan` guard).
 pub async fn run_scan(
-    app: &AppHandle,
     profile_id: i64,
     scope: ScanScope,
 ) -> Result<LatencySummary, String> {
     // everything below is a start-of-scan snapshot: edits made while the
     // scan runs (categories, rules) do not affect it
     let ((mut outbounds, mut untestable), test_urls) = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
         (
             load_outbounds(&conn, profile_id)?,
@@ -108,7 +103,7 @@ pub async fn run_scan(
     };
     if matches!(scope, ScanScope::ReachableOnly) {
         let reachable = {
-            let state = app.state::<AppState>();
+            let state = env::state();
             let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
             load_reachable_ids(&conn, profile_id)?
         };
@@ -119,7 +114,7 @@ pub async fn run_scan(
     }
     if matches!(scope, ScanScope::UntestedOnly) {
         let untested = {
-            let state = app.state::<AppState>();
+            let state = env::state();
             let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
             load_untested_ids(&conn, profile_id)?
         };
@@ -130,7 +125,7 @@ pub async fn run_scan(
     }
     if matches!(scope, ScanScope::ReachableAndUntested) {
         let (reachable, untested) = {
-            let state = app.state::<AppState>();
+            let state = env::state();
             let conn = state.db.lock().map_err(|_| "database lock poisoned".to_string())?;
             (
                 load_reachable_ids(&conn, profile_id)?,
@@ -206,10 +201,10 @@ pub async fn run_scan(
     if !untestable.is_empty() {
         let failed: Vec<LatencyResult> =
             untestable.iter().map(|&id| LatencyResult::failed(id)).collect();
-        store_batch(app, &failed, &[])?;
+        store_batch(&failed, &[])?;
         done += failed.len();
         advance_scan(profile_id, done);
-        emit_progress(app, profile_id, done, total, &failed);
+        emit_progress(profile_id, done, total, &failed);
     }
 
     let tagged: Vec<(i64, String)> = outbounds
@@ -274,32 +269,31 @@ pub async fn run_scan(
             }
         }
 
-        store_batch(app, &results, &url_probes)?;
+        store_batch(&results, &url_probes)?;
         reachable += results.iter().filter(|result| result.available).count();
         done += results.len();
         advance_scan(profile_id, done);
-        emit_progress(app, profile_id, done, total, &results);
+        emit_progress(profile_id, done, total, &results);
         // fresh availability data just landed — let an automatic strategy
         // running the live session leave a dead or untested endpoint now
         // instead of waiting out the rest of the scan
-        crate::auto_select::rescue(app, profile_id).await;
+        crate::auto_select::rescue(profile_id).await;
     }
 
     // kills the instance, removes the config; a cancelled scan reports what
     // it actually got through
     drop(sing_box);
-    profiles::after_mutation(app, Some(profile_id), profiles::LATENCY);
+    profiles::after_mutation(Some(profile_id), profiles::LATENCY);
     Ok(LatencySummary { total: done, reachable })
 }
 
 fn emit_progress(
-    app: &AppHandle,
     profile_id: i64,
     done: usize,
     total: usize,
     results: &[LatencyResult],
 ) {
-    let _ = app.emit(
+    env::emit(
         LATENCY_PROGRESS_EVENT,
         LatencyProgress {
             profile_id,

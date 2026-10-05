@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use rusqlite::{Connection, params};
 use serde::Serialize;
-use tauri::State;
 
 use crate::AppState;
+use crate::env;
 use crate::sites;
 
 /// One strategy's per-site outcomes, grouped by category (details popover
@@ -19,7 +21,8 @@ pub struct DpiSiteStatus {
 }
 
 #[tauri::command]
-pub fn dpi_strategy_urls(state: State<AppState>, strategy_id: i64) -> Result<Vec<DpiSiteStatus>, String> {
+pub fn dpi_strategy_urls(strategy_id: i64) -> Result<Vec<DpiSiteStatus>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     strategy_url_statuses(&conn, strategy_id)
 }
@@ -89,7 +92,7 @@ fn strategy_url_statuses(conn: &Connection, strategy_id: i64) -> Result<Vec<DpiS
     Ok(rows)
 }
 
-fn lock_db<'a>(state: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
+fn lock_db(state: &Arc<AppState>) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
     state.db.lock().map_err(|_| "database lock poisoned".to_string())
 }
 

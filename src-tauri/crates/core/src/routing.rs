@@ -7,11 +7,11 @@
 
 use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, State};
 
 use crate::AppState;
 use crate::connection;
 use crate::db::{get_setting, set_setting};
+use crate::env;
 use crate::sites;
 
 pub const ACTION_PROXY: &str = "proxy";
@@ -55,7 +55,8 @@ pub struct RoutingConfig {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn routing_list(state: State<AppState>) -> Result<RoutingConfig, String> {
+pub fn routing_list() -> Result<RoutingConfig, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     load_routing(&conn)
 }
@@ -63,13 +64,10 @@ pub fn routing_list(state: State<AppState>) -> Result<RoutingConfig, String> {
 /// Changes the fallback action for everything unmatched. A running session
 /// restarts with the new route — the outcome lands in the global toast.
 #[tauri::command]
-pub async fn routing_set_fallback(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    action: String,
-) -> Result<(), String> {
+pub async fn routing_set_fallback(action: String) -> Result<(), String> {
     let action = validate_action(&action)?;
     let changed = {
+        let state = env::state();
         let conn = lock_db(&state)?;
         let previous = get_setting(&conn, SETTING_FALLBACK)
             .map_err(db_err)?
@@ -78,7 +76,7 @@ pub async fn routing_set_fallback(
         previous.as_deref() != Some(action.as_str())
     };
     if changed {
-        apply_routing_change_live(&app).await;
+        apply_routing_change_live().await;
     }
     Ok(())
 }
@@ -88,11 +86,11 @@ pub async fn routing_set_fallback(
 /// outcome lands in the global toast, like every user-initiated
 /// reconfiguration. Callers gate on the change actually reaching the
 /// config (empty categories, renames and test toggles do not).
-pub async fn apply_routing_change_live(app: &AppHandle) {
+pub async fn apply_routing_change_live() {
     let Some(profile_id) = connection::running_profile() else {
         return;
     };
-    match connection::restart_if_running(app.clone(), profile_id).await {
+    match connection::restart_if_running(profile_id).await {
         Ok(Some(_)) | Ok(None) => {
             // Ok(None) after the running check: a DPI-only session — the
             // route rules were rebuilt just the same
@@ -101,9 +99,9 @@ pub async fn apply_routing_change_live(app: &AppHandle) {
                 Some(dpi) => format!("routing applied — DPI tunnel: {}", dpi.strategy),
                 None => "routing applied".to_string(),
             };
-            connection::emit_restart_result(app, true, message);
+            connection::emit_restart_result(true, message);
         }
-        Err(error) => connection::emit_restart_result(app, false, error),
+        Err(error) => connection::emit_restart_result(false, error),
     }
 }
 
@@ -156,7 +154,7 @@ pub(crate) fn validate_action(value: &str) -> Result<String, String> {
     }
 }
 
-fn lock_db<'a>(state: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
+fn lock_db(state: &AppState) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
     state.db.lock().map_err(|_| "database lock poisoned".to_string())
 }
 

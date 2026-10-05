@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+
+use crate::env;
 
 use super::state::{DIRECT_TAG, DPI_TAG, PROXY_TAG};
 
@@ -89,15 +90,14 @@ pub fn connection_url_stats() -> Result<Vec<UrlStatEntry>, String> {
     URL_STATS.lock().map(|stats| stats.clone()).map_err(|e| e.to_string())
 }
 
-pub(super) fn start_traffic_poller(app: &AppHandle, api_port: u16) {
+pub(super) fn start_traffic_poller(api_port: u16) {
     // a fresh session counts from zero (a disconnect deliberately keeps the
     // last table for post-session viewing)
     if let Ok(mut stats) = URL_STATS.lock() {
         stats.clear();
     }
     let gen = TRAFFIC_POLL_GEN.fetch_add(1, Ordering::Relaxed) + 1;
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || traffic_poll_loop(&app, api_port, gen));
+    tauri::async_runtime::spawn_blocking(move || traffic_poll_loop(api_port, gen));
 }
 
 pub(super) fn stop_traffic_poller() {
@@ -110,7 +110,7 @@ pub(super) fn stop_traffic_poller() {
 /// per-connection deltas accumulate into per-outbound totals. Blocking —
 /// runs on a `spawn_blocking` thread; exits once its generation is
 /// superseded (disconnect, unexpected exit, a fresh connect).
-fn traffic_poll_loop(app: &AppHandle, api_port: u16, gen: u64) {
+fn traffic_poll_loop(api_port: u16, gen: u64) {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(1)))
         .build()
@@ -136,7 +136,7 @@ fn traffic_poll_loop(app: &AppHandle, api_port: u16, gen: u64) {
         };
         accumulate_connections(&payload, &mut seen, &mut totals, &mut urls, &mut meta);
         publish_url_stats(&urls);
-        let _ = app.emit(TRAFFIC_STATS_EVENT, totals);
+        env::emit(TRAFFIC_STATS_EVENT, totals);
     }
 }
 

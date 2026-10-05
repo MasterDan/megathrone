@@ -3,9 +3,9 @@
 //! exit watcher and the synchronous shutdown for the exit handler.
 
 use tauri::async_runtime::Receiver;
-use tauri::{AppHandle, Emitter};
 
 use crate::auto_select;
+use crate::env;
 use crate::process::CommandEvent;
 
 use super::byedpi::abort_dpi;
@@ -20,7 +20,7 @@ use super::traffic::stop_traffic_poller;
 
 /// Stops the proxy and puts the system proxy settings back; idempotent.
 #[tauri::command]
-pub async fn connection_disconnect(app: AppHandle) -> Result<ConnectionSnapshot, String> {
+pub async fn connection_disconnect() -> Result<ConnectionSnapshot, String> {
     let _flow = FLOW.lock().await;
 
     let taken = lock_state()?.running.take();
@@ -31,7 +31,7 @@ pub async fn connection_disconnect(app: AppHandle) -> Result<ConnectionSnapshot,
     }
     let snapshot = match taken {
         Some(mut running) => {
-            let restore_error = teardown(&app, &mut running).await.err();
+            let restore_error = teardown(&mut running).await.err();
             let mut state = lock_state()?;
             state.last_error = restore_error;
             snapshot_of(&state)
@@ -39,13 +39,13 @@ pub async fn connection_disconnect(app: AppHandle) -> Result<ConnectionSnapshot,
         None => current_snapshot(),
     };
 
-    let _ = app.emit(CONNECTION_CHANGED_EVENT, &snapshot);
+    env::emit(CONNECTION_CHANGED_EVENT, &snapshot);
     Ok(snapshot)
 }
 
 /// Called from the app exit handler: kills the instance and restores the
 /// system proxy synchronously (there is no async runtime to lean on).
-pub fn shutdown(app: &AppHandle) {
+pub fn shutdown() {
     let Some(mut running) = lock_state().ok().and_then(|mut state| state.running.take()) else {
         return;
     };
@@ -58,7 +58,7 @@ pub fn shutdown(app: &AppHandle) {
     };
     // keep the marker when the restore failed so the next start retries it
     if restored.is_ok() {
-        clear_marker(app);
+        clear_marker();
     }
     if let Some(child) = running.child.take() {
         let _ = child.kill();
@@ -72,7 +72,7 @@ pub fn shutdown(app: &AppHandle) {
 /// removes the temp config. Best effort — returns the first failure. The
 /// session marker is removed on success (kept on failure → the next start
 /// retries the restore).
-async fn teardown(app: &AppHandle, running: &mut Running) -> Result<(), String> {
+async fn teardown(running: &mut Running) -> Result<(), String> {
     // Android: the session is going down — the foreground service must not
     // outlive it (deliberate disconnect, crash cleanup, mid-flight rebuild)
     crate::mobile::set_foreground_service(false);
@@ -92,7 +92,7 @@ async fn teardown(app: &AppHandle, running: &mut Running) -> Result<(), String> 
     abort_dpi(running.dpi.take());
     let _ = std::fs::remove_file(&running.config_path);
     if restored.is_ok() {
-        clear_marker(app);
+        clear_marker();
     }
     Ok(())
 }
@@ -102,7 +102,7 @@ async fn teardown(app: &AppHandle, running: &mut Running) -> Result<(), String> 
 /// `connection-changed` with `connected: false` + the reason. A deliberate
 /// disconnect removes `Running` from the state *before* killing, so the
 /// watcher's `Terminated` finds nothing to report.
-pub(super) fn spawn_watcher(app: AppHandle, mut events: Receiver<CommandEvent>) {
+pub(super) fn spawn_watcher(mut events: Receiver<CommandEvent>) {
     tauri::async_runtime::spawn(async move {
         let mut stderr: Vec<u8> = Vec::new();
         while let Some(event) = events.recv().await {
@@ -113,7 +113,7 @@ pub(super) fn spawn_watcher(app: AppHandle, mut events: Receiver<CommandEvent>) 
                     stderr.drain(..overflow);
                 }
                 CommandEvent::Terminated(_) => {
-                    report_unexpected_exit(&app, tail(&stderr)).await;
+                    report_unexpected_exit(tail(&stderr)).await;
                     break;
                 }
                 _ => {}
@@ -122,13 +122,13 @@ pub(super) fn spawn_watcher(app: AppHandle, mut events: Receiver<CommandEvent>) 
     });
 }
 
-async fn report_unexpected_exit(app: &AppHandle, reason: String) {
+async fn report_unexpected_exit(reason: String) {
     let Some(mut running) = lock_state().ok().and_then(|mut state| state.running.take()) else {
         return;
     };
     auto_select::stop(running.profile_id);
     stop_traffic_poller();
-    let restore_error = teardown(app, &mut running).await.err();
+    let restore_error = teardown(&mut running).await.err();
     let message = match (reason.is_empty(), restore_error) {
         (true, None) => "sing-box exited unexpectedly".to_string(),
         (true, Some(restore)) => {
@@ -149,5 +149,5 @@ async fn report_unexpected_exit(app: &AppHandle, reason: String) {
             ..ConnectionSnapshot::default()
         },
     };
-    let _ = app.emit(CONNECTION_CHANGED_EVENT, &snapshot);
+    env::emit(CONNECTION_CHANGED_EVENT, &snapshot);
 }

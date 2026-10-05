@@ -17,6 +17,13 @@ export default defineConfig({
     },
   },
   clearScreen: false,
+  // solid-icons ships raw JSX (its "module" entry is a .jsx file) — the dev
+  // optimizer would pre-bundle it with esbuild's React JSX factory
+  // ("React is not defined"); excluded, the file goes through the regular
+  // transform pipeline where vite-plugin-solid compiles it instead
+  optimizeDeps: {
+    exclude: ["solid-icons"],
+  },
   server: {
     port: 1421,
     strictPort: true,

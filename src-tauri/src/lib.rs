@@ -71,11 +71,21 @@ pub fn run() {
                     .map_err(|e| format!("failed to seed the default test sites: {e}"))?;
                 discovery::seed_discovery_sources(&connection)
                     .map_err(|e| format!("failed to seed the discovery sources: {e}"))?;
-                app.manage(megathrone_core::AppState::new(connection, notify.clone()));
-                megathrone_core::scheduler::spawn(app.handle().clone(), notify);
+                // the shell-agnostic core environment: state access, event
+                // broadcasts (the app's IPC bus) and the data dir in one
+                // place — the same contract the console web server installs
+                megathrone_core::env::install_tauri(
+                    app.handle().clone(),
+                    std::sync::Arc::new(megathrone_core::AppState::new(
+                        connection,
+                        notify.clone(),
+                    )),
+                    Some(data_dir),
+                );
+                megathrone_core::scheduler::spawn(notify);
                 // undo whatever a hard-killed previous session left behind,
                 // and make Ctrl+C/SIGTERM go through the graceful exit path
-                connection::recover(app.handle());
+                connection::recover();
                 connection::install_exit_signals(app.handle());
                 // the tray icon (status menu + the real quit); the window's
                 // close button hides into it unless the user opted out
@@ -159,15 +169,13 @@ pub fn run() {
             // desktop only: hiding into the tray instead of quitting
             #[cfg(desktop)]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let app = window.app_handle();
                 // the tray is always alive, so defaulting to "hide" on a
                 // broken settings read cannot strand the user
-                let close_to_tray = app
-                    .try_state::<megathrone_core::AppState>()
-                    .and_then(|state| {
-                        let conn = state.db.lock().ok()?;
-                        settings::load_general(&conn).ok()
-                    })
+                let close_to_tray = megathrone_core::env::state()
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|conn| settings::load_general(&conn).ok())
                     .map(|settings| settings.close_to_tray)
                     .unwrap_or(settings::DEFAULT_CLOSE_TO_TRAY);
                 if close_to_tray {
@@ -182,14 +190,14 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
+        .run(|_app, event| {
             match event {
                 // never leave a running sidecar / a system proxy behind on exit
-                tauri::RunEvent::Exit => connection::shutdown(app),
+                tauri::RunEvent::Exit => connection::shutdown(),
                 // macOS: the dock icon was clicked while the window hides in
                 // the tray — bring the window back
                 #[cfg(target_os = "macos")]
-                tauri::RunEvent::Reopen { .. } => tray::show_main_window(app),
+                tauri::RunEvent::Reopen { .. } => tray::show_main_window(_app),
                 _ => {}
             }
         });

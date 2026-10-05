@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
 
+use crate::env;
 use crate::process::CommandChild;
 
 use super::state::Running;
@@ -42,15 +42,12 @@ struct SessionMarker {
     dpi_pid: u32,
 }
 
-fn marker_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("proxy-session.json"))
+fn marker_path() -> Option<PathBuf> {
+    env::data_dir().map(|dir| dir.join("proxy-session.json"))
 }
 
-pub(super) fn write_marker(app: &AppHandle, running: &Running) {
-    let Some(path) = marker_path(app) else { return };
+pub(super) fn write_marker(running: &Running) {
+    let Some(path) = marker_path() else { return };
     let marker = SessionMarker {
         owner_pid: std::process::id(),
         child_pid: running.child.as_ref().map_or(0, CommandChild::pid),
@@ -68,8 +65,8 @@ pub(super) fn write_marker(app: &AppHandle, running: &Running) {
     }
 }
 
-pub(super) fn clear_marker(app: &AppHandle) {
-    if let Some(path) = marker_path(app) {
+pub(super) fn clear_marker() {
+    if let Some(path) = marker_path() {
         let _ = std::fs::remove_file(&path);
     }
 }
@@ -77,8 +74,8 @@ pub(super) fn clear_marker(app: &AppHandle) {
 /// Cleans up after a previous session that died without unwinding: restores
 /// the system proxy, kills an orphaned sing-box, removes its temp config and
 /// the marker itself. A no-op after a clean exit (no marker there).
-pub fn recover(app: &AppHandle) {
-    let Some(path) = marker_path(app) else { return };
+pub fn recover() {
+    let Some(path) = marker_path() else { return };
     let Ok(raw) = std::fs::read_to_string(&path) else { return };
     let Ok(marker) = serde_json::from_str::<SessionMarker>(&raw) else {
         let _ = std::fs::remove_file(&path);
@@ -117,7 +114,7 @@ pub fn recover(app: &AppHandle) {
 /// performs the same cleanup as a window close. (SIGKILL — e.g. a debugger
 /// stop — cannot be caught; the session marker covers that case.)
 #[cfg(unix)]
-pub fn install_exit_signals(app: &AppHandle) {
+pub fn install_exit_signals(app: &tauri::AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         let interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
@@ -135,7 +132,7 @@ pub fn install_exit_signals(app: &AppHandle) {
 }
 
 #[cfg(not(unix))]
-pub fn install_exit_signals(_app: &AppHandle) {}
+pub fn install_exit_signals(_app: &tauri::AppHandle) {}
 
 #[cfg(unix)]
 fn process_comm_is(pid: u32, needle: &str) -> bool {

@@ -1,13 +1,11 @@
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
-
 use rusqlite::params;
 
 use super::supervisor::{is_current, mark_pass_now};
 use super::verdicts::should_switch_quality;
-use crate::AppState;
 use crate::connection;
+use crate::env;
 use crate::latency;
 use crate::profiles;
 
@@ -19,11 +17,9 @@ const SCAN_WAIT_POLL: Duration = Duration::from_secs(1);
 /// endpoint, the others take the current data's best. Returns the tag the
 /// session runs; `Err` when the pick could not be applied. Call after
 /// `ensure` (the supervisor must exist so the pass bookkeeping lands).
-pub async fn apply_now(app: &AppHandle, profile_id: i64, mode: &str) -> Result<String, String> {
+pub async fn apply_now(profile_id: i64, mode: &str) -> Result<String, String> {
     let picked = {
-        let Some(state) = app.try_state::<AppState>() else {
-            return Err("the app state is unavailable".to_string());
-        };
+        let state = env::state();
         let Ok(conn) = state.db.lock() else {
             return Err("database lock poisoned".to_string());
         };
@@ -51,9 +47,7 @@ pub async fn apply_now(app: &AppHandle, profile_id: i64, mode: &str) -> Result<S
         return Ok(pick_tag); // the strategy already runs this endpoint
     }
     let switched = {
-        let Some(state) = app.try_state::<AppState>() else {
-            return Err("the app state is unavailable".to_string());
-        };
+        let state = env::state();
         let Ok(conn) = state.db.lock() else {
             return Err("database lock poisoned".to_string());
         };
@@ -62,8 +56,8 @@ pub async fn apply_now(app: &AppHandle, profile_id: i64, mode: &str) -> Result<S
     if !switched {
         return Ok(pick_tag);
     }
-    profiles::after_mutation(app, Some(profile_id), profiles::SELECTION);
-    match connection::switch_endpoint_if_running(app.clone(), profile_id).await {
+    profiles::after_mutation(Some(profile_id), profiles::SELECTION);
+    match connection::switch_endpoint_if_running(profile_id).await {
         Ok(Some(tag)) => Ok(tag),
         Ok(None) => Ok(pick_tag),
         Err(error) => Err(error),
@@ -72,9 +66,9 @@ pub async fn apply_now(app: &AppHandle, profile_id: i64, mode: &str) -> Result<S
 
 /// Selects the strategy's pick when the profile has no selection at all
 /// (fresh profile, a mode switch, a selection dropped by an update).
-pub(super) async fn ensure_selection(app: &AppHandle, profile_id: i64, mode: &str) {
+pub(super) async fn ensure_selection(profile_id: i64, mode: &str) {
     let selected = {
-        let Some(state) = app.try_state::<AppState>() else { return };
+        let state = env::state();
         let Ok(conn) = state.db.lock() else { return };
         if profiles::selected_raw_key(&conn, profile_id).ok().flatten().is_some() {
             return;
@@ -92,8 +86,8 @@ pub(super) async fn ensure_selection(app: &AppHandle, profile_id: i64, mode: &st
         picked_id
     };
     if selected.is_some() {
-        profiles::after_mutation(app, Some(profile_id), profiles::SELECTION);
-        let _ = connection::switch_endpoint_if_running(app.clone(), profile_id).await;
+        profiles::after_mutation(Some(profile_id), profiles::SELECTION);
+        let _ = connection::switch_endpoint_if_running(profile_id).await;
     }
 }
 
@@ -101,16 +95,16 @@ pub(super) async fn ensure_selection(app: &AppHandle, profile_id: i64, mode: &st
 /// previous pass), then runs its own. A lost race (another scan started in
 /// the gap) is fine — the pass logic simply works with whatever data is
 /// there and the next pass re-tests.
-pub(super) async fn run_pass_scan(app: &AppHandle, profile_id: i64, sticky_pass: bool) {
+pub(super) async fn run_pass_scan(profile_id: i64, sticky_pass: bool) {
     while latency::scan_running(profile_id) {
         tokio::time::sleep(SCAN_WAIT_POLL).await;
     }
     let scope = pass_scope(
         sticky_pass,
-        has_reachable_endpoint(app, profile_id),
-        has_untested_endpoint(app, profile_id),
+        has_reachable_endpoint(profile_id),
+        has_untested_endpoint(profile_id),
     );
-    let _ = latency::run_scan(app, profile_id, scope).await;
+    let _ = latency::run_scan(profile_id, scope).await;
 }
 
 /// A pass re-checks only the endpoints the last scan proved reachable —
@@ -161,8 +155,8 @@ mod tests {
     }
 }
 
-pub(super) fn has_reachable_endpoint(app: &AppHandle, profile_id: i64) -> bool {
-    let Some(state) = app.try_state::<AppState>() else { return false };
+pub(super) fn has_reachable_endpoint(profile_id: i64) -> bool {
+    let state = env::state();
     let Ok(conn) = state.db.lock() else { return false };
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM endpoints WHERE profile_id = ?1 AND available = 1)",
@@ -174,8 +168,8 @@ pub(super) fn has_reachable_endpoint(app: &AppHandle, profile_id: i64) -> bool {
 
 /// Whether the profile still has endpoints no scan has ever stamped —
 /// fresh rows of a past update waiting for their first test.
-fn has_untested_endpoint(app: &AppHandle, profile_id: i64) -> bool {
-    let Some(state) = app.try_state::<AppState>() else { return false };
+fn has_untested_endpoint(profile_id: i64) -> bool {
+    let state = env::state();
     let Ok(conn) = state.db.lock() else { return false };
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM endpoints WHERE profile_id = ?1 AND last_tested_at IS NULL)",
@@ -191,7 +185,6 @@ fn has_untested_endpoint(app: &AppHandle, profile_id: i64) -> bool {
 /// whole point; on scan ticks (`rotate == false`) a reachable current is
 /// kept and only a dead, unknown or dangling one is replaced.
 pub(super) async fn apply_pass(
-    app: &AppHandle,
     profile_id: i64,
     generation: u64,
     mode: &str,
@@ -199,7 +192,7 @@ pub(super) async fn apply_pass(
     rotate: bool,
 ) {
     let picked = {
-        let Some(state) = app.try_state::<AppState>() else { return };
+        let state = env::state();
         let Ok(conn) = state.db.lock() else { return };
         let Some(current_raw) = profiles::selected_raw_key(&conn, profile_id).ok().flatten()
         else {
@@ -238,14 +231,14 @@ pub(super) async fn apply_pass(
             return;
         }
         let switched = {
-            let Some(state) = app.try_state::<AppState>() else { return };
+            let state = env::state();
             let Ok(conn) = state.db.lock() else { return };
             profiles::set_selected_endpoint(&conn, profile_id, Some(item_id)).unwrap_or(false)
         };
         if switched {
             eprintln!("[auto-select] profile {profile_id} ({mode}): now on {tag}");
-            profiles::after_mutation(app, Some(profile_id), profiles::SELECTION);
-            let _ = connection::switch_endpoint_if_running(app.clone(), profile_id).await;
+            profiles::after_mutation(Some(profile_id), profiles::SELECTION);
+            let _ = connection::switch_endpoint_if_running(profile_id).await;
         }
     }
 }

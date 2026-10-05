@@ -1,9 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager};
-
-use crate::AppState;
+use crate::env;
 
 use super::model::{ProfilesChangedPayload, PROFILES_CHANGED_EVENT};
 
@@ -54,9 +52,9 @@ pub(super) fn default_name_from_path(path: &str) -> String {
 /// Use `CONTENT` when endpoints may have changed, `META` for settings-only
 /// changes (rename, auto-update interval), `LATENCY` when only availability
 /// test results were refreshed.
-pub fn after_mutation(app: &AppHandle, profile_id: Option<i64>, kind: &'static str) {
-    let _ = app.emit(PROFILES_CHANGED_EVENT, ProfilesChangedPayload { profile_id, kind });
-    app.state::<AppState>().notify_auto_update();
+pub fn after_mutation(profile_id: Option<i64>, kind: &'static str) {
+    env::emit(PROFILES_CHANGED_EVENT, ProfilesChangedPayload { profile_id, kind });
+    env::state().notify_auto_update();
 }
 
 pub const CONTENT: &str = "content";

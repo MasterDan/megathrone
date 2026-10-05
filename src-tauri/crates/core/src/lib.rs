@@ -1,13 +1,14 @@
 //! The Megathrone core library: every piece of the backend that is not the
 //! shell around it — the SQLite layer, the subscription parser, profiles,
 //! routing, the sing-box/byedpi session management, scans and the scheduler.
-//! Both shells consume it: the Tauri desktop/Android app (`src-tauri`) and
-//! the console web server (`crates/web`).
+//! Both shells consume it identically: the Tauri desktop/Android app
+//! (`src-tauri`) and the console web server (`crates/web`) install the
+//! [`env`] environment at startup and then drive the same command surface.
 //!
 //! The crate still leans on `tauri` types in its command layer
-//! (`tauri::command`, `State<AppState>`, `AppHandle` events) — the commands
-//! are thin wrappers over pure storage functions; the web shell calls the
-//! storage layer directly.
+//! (`tauri::command` macros) — the commands are thin wrappers over pure
+//! storage functions; state access and event broadcasts go through
+//! [`env`] so either shell can host them.
 
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +20,7 @@ pub mod db;
 pub mod discovery;
 pub mod dpi;
 pub mod dpi_test;
+pub mod env;
 pub mod latency;
 pub mod mobile;
 pub mod parser;

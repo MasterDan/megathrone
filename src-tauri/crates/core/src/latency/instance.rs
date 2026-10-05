@@ -4,7 +4,6 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use tauri::AppHandle;
 
 use super::storage::OutboundRow;
 use crate::parser;
@@ -154,11 +153,9 @@ pub(super) fn isolate_bad_outbounds(
 /// connect-fallback's shared "which rows can this sing-box even load"
 /// check. Returns (loadable rows, ids sing-box refuses).
 pub async fn isolate_unloadable_outbounds(
-    app: &AppHandle,
     rows: Vec<OutboundRow>,
 ) -> Result<(Vec<OutboundRow>, Vec<i64>), String> {
     let api_port = free_local_port()?;
-    let _ = app;
     tauri::async_runtime::spawn_blocking(move || {
         let check = |values: &[Value]| run_sing_box_check(api_port, values);
         isolate_bad_outbounds(&rows, &check)

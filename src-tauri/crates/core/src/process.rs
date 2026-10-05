@@ -17,15 +17,13 @@
 //!   `+x` files named that way; exec from the data dir is forbidden).
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::{Arc, RwLock};
 use std::thread;
 
 use tauri::async_runtime::{channel, Receiver};
 
-#[cfg(target_os = "android")]
-use std::path::Path;
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
 
@@ -124,6 +122,19 @@ fn sidecar_path(name: &str, file_name: &str) -> Result<PathBuf, String> {
     #[cfg(not(target_os = "android"))]
     {
         let _ = name;
+        // an explicit override (the console web server pointing at a staged
+        // binaries dir) wins over the exe-dir lookup; it accepts both the
+        // bare name and build.rs's `<name>-<triple>` staging form
+        if let Some(dir) = std::env::var_os("MEGATHRONE_SIDECAR_DIR") {
+            let dir = PathBuf::from(dir);
+            if let Some(path) = staged_sidecar(&dir, file_name) {
+                return Ok(path);
+            }
+            return Err(format!(
+                "MEGATHRONE_SIDECAR_DIR is set but holds no `{file_name}` (looked in {})",
+                dir.display()
+            ));
+        }
         let exe = std::env::current_exe()
             .map_err(|error| format!("failed to locate the current executable: {error}"))?;
         let exe_dir = exe
@@ -137,6 +148,49 @@ fn sidecar_path(name: &str, file_name: &str) -> Result<PathBuf, String> {
             exe_dir
         };
         Ok(base_dir.join(file_name))
+    }
+}
+
+/// The sidecar in a staged binaries dir: the bare `file_name` itself, or
+/// the target-triple-suffixed staging form build.rs downloads
+/// (`sing-box-<triple>` / `byedpi-<triple>`). Only spawnable files count —
+/// the dir also holds `<staging-name>.version` stamp files which share the
+/// prefix and must never be picked.
+#[cfg(not(target_os = "android"))]
+fn staged_sidecar(dir: &Path, file_name: &str) -> Option<PathBuf> {
+    let bare = dir.join(file_name);
+    if is_spawnable_file(&bare) {
+        return Some(bare);
+    }
+    let prefix = format!("{file_name}-");
+    std::fs::read_dir(dir).ok()?.find_map(|entry| {
+        let path = entry.ok()?.path();
+        let name = path.file_name()?.to_str()?;
+        if !name.starts_with(&prefix) || name.ends_with(".version") {
+            return None;
+        }
+        is_spawnable_file(&path).then_some(path)
+    })
+}
+
+/// A regular file the OS could actually exec (the `.version` stamps and
+/// stray directories are not).
+#[cfg(not(target_os = "android"))]
+fn is_spawnable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
@@ -193,7 +247,10 @@ pub struct Command {
 
 impl Command {
     pub fn new(program: PathBuf) -> Self {
-        Self { program, args: Vec::new() }
+        Self {
+            program,
+            args: Vec::new(),
+        }
     }
 
     /// Appends arguments to the command.
@@ -203,7 +260,8 @@ impl Command {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.args.extend(args.into_iter().map(|arg| arg.as_ref().to_string()));
+        self.args
+            .extend(args.into_iter().map(|arg| arg.as_ref().to_string()));
         self
     }
 
@@ -220,9 +278,8 @@ impl Command {
         #[cfg(windows)]
         command.creation_flags(CREATE_NO_WINDOW);
 
-        let child = shared_child::SharedChild::spawn(&mut command).map_err(|error| {
-            format!("failed to spawn {}: {error}", self.program.display())
-        })?;
+        let child = shared_child::SharedChild::spawn(&mut command)
+            .map_err(|error| format!("failed to spawn {}: {error}", self.program.display()))?;
         let child = Arc::new(child);
 
         let stdout = child.take_stdout();
@@ -279,7 +336,11 @@ impl Command {
                 CommandEvent::Error(error) => return Err(error),
             }
         }
-        Ok(Output { status: ExitStatus { code }, stdout, stderr })
+        Ok(Output {
+            status: ExitStatus { code },
+            stdout,
+            stderr,
+        })
     }
 }
 
@@ -345,4 +406,61 @@ pub async fn sing_box_version() -> Result<String, String> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout.lines().next().unwrap_or_default().trim().to_string())
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_sidecar_skips_version_stamps_and_directories() {
+        let dir = std::env::temp_dir().join(format!("mt-sidecar-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the staging dir");
+
+        let binary = dir.join("byedpi-x86_64-unknown-linux-gnu");
+        std::fs::write(&binary, b"#!/bin/sh\n").expect("write the fake binary");
+        make_executable(&binary);
+
+        // the stamp file build.rs leaves next to the binary shares the
+        // prefix — the resolver must never pick it
+        std::fs::write(dir.join("byedpi-x86_64-unknown-linux-gnu.version"), "1.2.3").unwrap();
+        // a staged directory (the android jniLibs layout) shares it too
+        std::fs::create_dir_all(dir.join("byedpi-some-triple")).unwrap();
+
+        let resolved = staged_sidecar(&dir, "byedpi");
+        assert_eq!(resolved.as_deref(), Some(binary.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staged_sidecar_prefers_the_bare_name() {
+        let dir = std::env::temp_dir().join(format!("mt-sidecar-bare-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the staging dir");
+
+        let bare = dir.join("sing-box");
+        std::fs::write(&bare, b"#!/bin/sh\n").expect("write the fake binary");
+        make_executable(&bare);
+        std::fs::write(
+            dir.join("sing-box-x86_64-unknown-linux-gnu.version"),
+            "1.2.3",
+        )
+        .unwrap();
+
+        let resolved = staged_sidecar(&dir, "sing-box");
+        assert_eq!(resolved.as_deref(), Some(bare.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    fn make_executable(_path: &Path) {}
 }

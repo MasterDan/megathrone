@@ -9,11 +9,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
 use crate::discovery;
-use crate::AppState;
+use crate::env;
 use crate::profiles;
 
 /// Never spin faster than this, even if a schedule is overdue.
@@ -24,11 +23,10 @@ const IDLE_WAIT_SECONDS: f64 = 6.0 * 3600.0;
 /// permanently overdue-but-failing profile.
 const FAILURE_BACKOFF_SECONDS: f64 = 300.0;
 
-pub fn spawn(app: AppHandle, notify: Arc<Notify>) {
+pub fn spawn(notify: Arc<Notify>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            let pass_app = app.clone();
-            let pass = tauri::async_runtime::spawn_blocking(move || run_pass(&pass_app)).await;
+            let pass = tauri::async_runtime::spawn_blocking(run_pass).await;
 
             let (next_in, failures) = match pass {
                 Ok(Ok(result)) => result,
@@ -54,9 +52,9 @@ pub fn spawn(app: AppHandle, notify: Arc<Notify>) {
 }
 
 /// Updates everything that is due and reports when the next update is due.
-fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
+fn run_pass() -> Result<(Option<f64>, usize), String> {
     let due = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state
             .db
             .lock()
@@ -66,15 +64,13 @@ fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
 
     let mut failures = 0;
     for profile_id in due {
-        match profiles::update_profile_flow(app, profile_id, profiles::UpdateTrigger::Scheduler) {
+        match profiles::update_profile_flow(profile_id, profiles::UpdateTrigger::Scheduler) {
             Ok(outcome) => {
                 // the endpoint set changed under a live session's feet —
                 // rebuild it silently (the manual Update button reports
                 // its rebuild through the restart toast instead)
                 if outcome.set_changed {
-                    let restart_app = app.clone();
                     tauri::async_runtime::spawn(profiles::rebuild_session_after_update(
-                        restart_app,
                         profile_id,
                         true,
                         false,
@@ -91,7 +87,7 @@ fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
     // the scheduled Discovery run; a started run carries its fresh
     // interval — it stamps its own start time asynchronously, so the
     // next wake comes from the interval, not from the KV
-    let discovery_started = match discovery::run_if_due(app) {
+    let discovery_started = match discovery::run_if_due() {
         Ok(interval) => interval,
         Err(error) => {
             eprintln!("[auto-update] discovery run failed: {error}");
@@ -101,7 +97,7 @@ fn run_pass(app: &AppHandle) -> Result<(Option<f64>, usize), String> {
     };
 
     let next = {
-        let state = app.state::<AppState>();
+        let state = env::state();
         let conn = state
             .db
             .lock()

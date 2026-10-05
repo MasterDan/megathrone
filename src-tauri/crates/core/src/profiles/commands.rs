@@ -1,7 +1,7 @@
 use rusqlite::Connection;
-use tauri::{AppHandle, Manager, State};
 
 use crate::connection;
+use crate::env;
 use crate::AppState;
 
 use super::endpoints::{
@@ -27,52 +27,48 @@ use super::update::{
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn profiles_list(state: State<AppState>) -> Result<Vec<ProfileSummary>, String> {
+pub fn profiles_list() -> Result<Vec<ProfileSummary>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     list_profiles(&conn)
 }
 
 #[tauri::command]
-pub fn profile_get(state: State<AppState>, profile_id: i64) -> Result<ProfileSummary, String> {
+pub fn profile_get(profile_id: i64) -> Result<ProfileSummary, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     summary_by_id(&conn, profile_id)
 }
 
 #[tauri::command]
 pub fn profile_import_from_url(
-    app: AppHandle,
-    state: State<AppState>,
     url: String,
     name: Option<String>,
 ) -> Result<ProfileSummary, String> {
     let content = fetch_url(&url)?;
     let name = name.unwrap_or_else(|| default_name_from_url(&url));
     let url = Some(url);
+    let state = env::state();
     let mut conn = lock_db(&state)?;
-    import_profile(&mut conn, name, url, None, &content).inspect(|summary| {
-        after_mutation(&app, Some(summary.id), CONTENT);
-    })
+    import_profile(&mut conn, name, url, None, &content)
+        .inspect(|summary| after_mutation(Some(summary.id), CONTENT))
 }
 
 #[tauri::command]
 pub fn profile_import_from_file(
-    app: AppHandle,
-    state: State<AppState>,
     path: String,
     name: Option<String>,
 ) -> Result<ProfileSummary, String> {
     let content = read_file(&path)?;
     let name = name.unwrap_or_else(|| default_name_from_path(&path));
+    let state = env::state();
     let mut conn = lock_db(&state)?;
-    import_profile(&mut conn, name, None, Some(path), &content).inspect(|summary| {
-        after_mutation(&app, Some(summary.id), CONTENT);
-    })
+    import_profile(&mut conn, name, None, Some(path), &content)
+        .inspect(|summary| after_mutation(Some(summary.id), CONTENT))
 }
 
 #[tauri::command]
 pub fn profile_import_from_text(
-    app: AppHandle,
-    state: State<AppState>,
     content: String,
     name: String,
 ) -> Result<ProfileSummary, String> {
@@ -80,26 +76,25 @@ pub fn profile_import_from_text(
     if name.is_empty() {
         return Err("profile name must not be empty".into());
     }
+    let state = env::state();
     let mut conn = lock_db(&state)?;
-    import_profile(&mut conn, name, None, None, &content).inspect(|summary| {
-        after_mutation(&app, Some(summary.id), CONTENT);
-    })
+    import_profile(&mut conn, name, None, None, &content)
+        .inspect(|summary| after_mutation(Some(summary.id), CONTENT))
 }
 
 /// Manual update (the Update button). The live session, when the endpoint
 /// set actually changed, is rebuilt right here and reported through the
 /// global restart toast — like every user-initiated reconfiguration.
 #[tauri::command]
-pub async fn profile_update(app: AppHandle, profile_id: i64) -> Result<ProfileSummary, String> {
+pub async fn profile_update(profile_id: i64) -> Result<ProfileSummary, String> {
     let outcome = {
-        let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            update_profile_flow(&app, profile_id, UpdateTrigger::Manual)
+            update_profile_flow(profile_id, UpdateTrigger::Manual)
         })
-            .await
-            .map_err(|error| format!("update task failed: {error}"))?
+        .await
+        .map_err(|error| format!("update task failed: {error}"))?
     }?;
-    rebuild_session_after_update(app, profile_id, outcome.set_changed, true).await;
+    rebuild_session_after_update(profile_id, outcome.set_changed, true).await;
     Ok(outcome.summary)
 }
 
@@ -111,23 +106,20 @@ pub fn profile_update_status(profile_id: i64) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn profile_rename(
-    app: AppHandle,
-    state: State<AppState>,
-    profile_id: i64,
-    new_name: String,
-) -> Result<(), String> {
+pub fn profile_rename(profile_id: i64, new_name: String) -> Result<(), String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     rename_profile(&conn, profile_id, &new_name)?;
-    after_mutation(&app, Some(profile_id), META);
+    after_mutation(Some(profile_id), META);
     Ok(())
 }
 
 #[tauri::command]
-pub fn profile_delete(app: AppHandle, state: State<AppState>, profile_id: i64) -> Result<(), String> {
+pub fn profile_delete(profile_id: i64) -> Result<(), String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     delete_profile(&conn, profile_id)?;
-    after_mutation(&app, Some(profile_id), META);
+    after_mutation(Some(profile_id), META);
     Ok(())
 }
 
@@ -135,35 +127,28 @@ pub fn profile_delete(app: AppHandle, state: State<AppState>, profile_id: i64) -
 /// is among the deleted ones the session is torn down too — it must not
 /// keep routing through a profile that no longer exists.
 #[tauri::command]
-pub async fn profiles_delete_bulk(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile_ids: Vec<i64>,
-) -> Result<(), String> {
+pub async fn profiles_delete_bulk(profile_ids: Vec<i64>) -> Result<(), String> {
     let deleted_running = {
+        let state = env::state();
         let mut conn = lock_db(&state)?;
         let running = connection::running_profile();
         delete_profiles(&mut conn, &profile_ids)?;
         running.is_some_and(|id| profile_ids.contains(&id))
     };
-    after_mutation(&app, None, META);
+    after_mutation(None, META);
     if deleted_running {
-        connection::connection_disconnect(app).await?;
+        connection::connection_disconnect().await?;
     }
     Ok(())
 }
 
 /// Hides/shows a profile in the desktop sidebar (Settings → Profiles).
 #[tauri::command]
-pub fn profile_set_sidebar_visible(
-    app: AppHandle,
-    state: State<AppState>,
-    profile_id: i64,
-    visible: bool,
-) -> Result<(), String> {
+pub fn profile_set_sidebar_visible(profile_id: i64, visible: bool) -> Result<(), String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     set_sidebar_visible(&conn, profile_id, visible)?;
-    after_mutation(&app, Some(profile_id), META);
+    after_mutation(Some(profile_id), META);
     Ok(())
 }
 
@@ -171,37 +156,30 @@ pub fn profile_set_sidebar_visible(
 /// Profiles): the ids arrive in their new order and become positions
 /// 0..N; ids left out keep their old positions.
 #[tauri::command]
-pub fn profile_set_sidebar_order(
-    app: AppHandle,
-    state: State<AppState>,
-    ordered_ids: Vec<i64>,
-) -> Result<(), String> {
+pub fn profile_set_sidebar_order(ordered_ids: Vec<i64>) -> Result<(), String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     reorder_profiles(&conn, &ordered_ids)?;
-    after_mutation(&app, None, META);
+    after_mutation(None, META);
     Ok(())
 }
 
 #[tauri::command]
-pub fn profile_set_auto_update(
-    app: AppHandle,
-    state: State<AppState>,
-    profile_id: i64,
-    minutes: Option<i64>,
-) -> Result<(), String> {
+pub fn profile_set_auto_update(profile_id: i64, minutes: Option<i64>) -> Result<(), String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     set_auto_update(&conn, profile_id, minutes)?;
-    after_mutation(&app, Some(profile_id), META);
+    after_mutation(Some(profile_id), META);
     Ok(())
 }
 
 #[tauri::command]
 pub fn profile_items(
-    state: State<AppState>,
     profile_id: i64,
     offset: i64,
     limit: i64,
 ) -> Result<Vec<EndpointItem>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     list_items(&conn, profile_id, offset, limit)
 }
@@ -209,17 +187,15 @@ pub fn profile_items(
 /// 0-based position of one endpoint in the canonical order `profile_items`
 /// returns — the endpoints page scrolls its grid to the selected card.
 #[tauri::command]
-pub fn profile_item_index(
-    state: State<AppState>,
-    profile_id: i64,
-    item_id: i64,
-) -> Result<Option<i64>, String> {
+pub fn profile_item_index(profile_id: i64, item_id: i64) -> Result<Option<i64>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     item_index(&conn, profile_id, item_id)
 }
 
 #[tauri::command]
-pub fn profile_item_detail(state: State<AppState>, item_id: i64) -> Result<ItemDetail, String> {
+pub fn profile_item_detail(item_id: i64) -> Result<ItemDetail, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     item_detail(&conn, item_id)
 }
@@ -227,23 +203,23 @@ pub fn profile_item_detail(state: State<AppState>, item_id: i64) -> Result<ItemD
 /// Latest deep-probe outcomes for one endpoint (proxy-routed category
 /// URLs); fetched lazily by the card popover/modal.
 #[tauri::command]
-pub fn profile_endpoint_urls(state: State<AppState>, item_id: i64) -> Result<Vec<EndpointUrlStatus>, String> {
+pub fn profile_endpoint_urls(item_id: i64) -> Result<Vec<EndpointUrlStatus>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     endpoint_url_statuses(&conn, item_id)
 }
 
 #[tauri::command]
-pub fn profile_selected_endpoint(
-    state: State<AppState>,
-    profile_id: i64,
-) -> Result<Option<EndpointItem>, String> {
+pub fn profile_selected_endpoint(profile_id: i64) -> Result<Option<EndpointItem>, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     get_selected_endpoint(&conn, profile_id)
 }
 
 /// The profile's selection strategy (tabs on the endpoints page).
 #[tauri::command]
-pub fn profile_selection_mode(state: State<AppState>, profile_id: i64) -> Result<String, String> {
+pub fn profile_selection_mode(profile_id: i64) -> Result<String, String> {
+    let state = env::state();
     let conn = lock_db(&state)?;
     selection_mode(&conn, profile_id)
 }
@@ -253,17 +229,13 @@ pub fn profile_selection_mode(state: State<AppState>, profile_id: i64) -> Result
 /// (round robin rotates now) and the session switches when the endpoint
 /// changes; the outcome lands in the global toast.
 #[tauri::command]
-pub async fn profile_set_selection_mode(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile_id: i64,
-    mode: String,
-) -> Result<(), String> {
+pub async fn profile_set_selection_mode(profile_id: i64, mode: String) -> Result<(), String> {
     {
+        let state = env::state();
         let conn = lock_db(&state)?;
         set_selection_mode(&conn, profile_id, &mode)?;
     }
-    after_mutation(&app, Some(profile_id), SELECTION);
+    after_mutation(Some(profile_id), SELECTION);
     if !connection::runs_profile(profile_id) {
         return Ok(());
     }
@@ -271,22 +243,21 @@ pub async fn profile_set_selection_mode(
         crate::auto_select::stop(profile_id);
         // the session keeps running the picked endpoint — nothing to rebuild
         let tag = {
-            let state = app.state::<AppState>();
+            let state = env::state();
             let conn = lock_db(&state)?;
             get_selected_endpoint(&conn, profile_id)?
                 .map(|item| item.tag)
                 .unwrap_or_else(|| "no endpoint picked".to_string())
         };
-        connection::emit_restart_result(&app, true, format!("Endpoint mode — {tag}"));
+        connection::emit_restart_result(true, format!("Endpoint mode — {tag}"));
     } else {
-        crate::auto_select::ensure(&app, profile_id);
-        match crate::auto_select::apply_now(&app, profile_id, &mode).await {
+        crate::auto_select::ensure(profile_id);
+        match crate::auto_select::apply_now(profile_id, &mode).await {
             Ok(tag) => connection::emit_restart_result(
-                &app,
                 true,
                 format!("{} — via {tag}", selection_mode_label(&mode)),
             ),
-            Err(error) => connection::emit_restart_result(&app, false, error),
+            Err(error) => connection::emit_restart_result(false, error),
         }
     }
     Ok(())
@@ -297,12 +268,11 @@ pub async fn profile_set_selection_mode(
 /// connected the outcome lands in the global toast.
 #[tauri::command]
 pub async fn profile_select_endpoint(
-    app: AppHandle,
-    state: State<'_, AppState>,
     profile_id: i64,
     item_id: Option<i64>,
 ) -> Result<(), String> {
     let changed = {
+        let state = env::state();
         let conn = lock_db(&state)?;
         set_selection_mode(&conn, profile_id, SELECT_MANUAL)?;
         set_selected_endpoint(&conn, profile_id, item_id)?
@@ -310,22 +280,22 @@ pub async fn profile_select_endpoint(
     // the supervisor obeys manual mode; stop it right away instead of
     // waiting for its loop-top check
     crate::auto_select::stop(profile_id);
-    after_mutation(&app, Some(profile_id), SELECTION);
+    after_mutation(Some(profile_id), SELECTION);
     if changed {
         // applies live (a selector flip on the running instance; a cleared
         // selection re-picks on the reconnect); Ok(None) — nothing runs,
         // nothing to report
-        match connection::switch_endpoint_if_running(app.clone(), profile_id).await {
+        match connection::switch_endpoint_if_running(profile_id).await {
             Ok(Some(tag)) => {
-                connection::emit_restart_result(&app, true, format!("switched to {tag}"))
+                connection::emit_restart_result(true, format!("switched to {tag}"))
             }
             Ok(None) => {}
-            Err(error) => connection::emit_restart_result(&app, false, error),
+            Err(error) => connection::emit_restart_result(false, error),
         }
     }
     Ok(())
 }
 
-fn lock_db<'a>(state: &'a State<'_, AppState>) -> Result<std::sync::MutexGuard<'a, Connection>, String> {
+fn lock_db(state: &AppState) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
     state.db.lock().map_err(|_| "database lock poisoned".to_string())
 }
