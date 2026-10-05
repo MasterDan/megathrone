@@ -1,0 +1,21 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "megathrone-web: Debug (F5)",
+      "cargo": {
+        "args": ["build", "-p", "megathrone-web"],
+        "filter": { "name": "megathrone-web", "kind": "bin" }
+      },
+      "args": ["--port", "8420"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "info",
+        "RUST_BACKTRACE": "1"
+      },
+      "terminal": "integrated"
+    }
+  ]
+}

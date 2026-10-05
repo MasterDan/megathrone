@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Tauri: Debug (F5)",
+      "preLaunchTask": "vite: dev",
+      "postDebugTask": "kill: all",
+      "cargo": {
+        "args": ["build", "-p", "megathrone"],
+        "filter": { "kind": "bin" }
+      },
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_LOG": "info",
+        "RUST_BACKTRACE": "1"
+      },
+      "terminal": "integrated"
+    }
+  ]
+}

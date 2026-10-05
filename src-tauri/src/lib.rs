@@ -1,58 +1,10 @@
-use std::sync::{Arc, Mutex};
-
 use tauri::Manager;
-use tokio::sync::Notify;
 
-mod auto_select;
-mod connection;
-mod db;
-mod discovery;
-mod dpi;
-mod dpi_test;
-mod latency;
-mod mobile;
-mod parser;
-mod process;
-mod profiles;
-mod routing;
-mod scheduler;
-mod settings;
-mod sites;
-#[cfg(desktop)]
 mod tray;
 
-pub struct AppState {
-    db: Mutex<rusqlite::Connection>,
-    auto_update_notify: Arc<Notify>,
-}
-
-impl AppState {
-    /// Re-arm the auto-update scheduler (next wake is recomputed from the DB).
-    pub fn notify_auto_update(&self) {
-        self.auto_update_notify.notify_one();
-    }
-}
-
-#[tauri::command]
-async fn sing_box_version() -> Result<String, String> {
-    let output = process::sidecar("sing-box")
-        .map_err(|e| format!("failed to resolve sing-box sidecar: {e}"))?
-        .args(["version"])
-        .output()
-        .await
-        .map_err(|e| format!("failed to run sing-box: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "sing-box exited with {:?}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().next().unwrap_or_default().trim().to_string())
-}
+// the shell consumes the shared backend library (crates/core): the command
+// registry below only re-exports its commands for the IPC handler
+use megathrone_core::{connection, db, discovery, dpi, dpi_test, latency, profiles, settings, sites};
 
 // the mobile entry point (Android/iOS): the attribute generates the JNI
 // bootstrap the generated gradle/Xcode project loads
@@ -75,7 +27,7 @@ pub fn run() {
         }
     }
 
-    let auto_update_notify = Arc::new(Notify::new());
+    let auto_update_notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
@@ -83,7 +35,7 @@ pub fn run() {
     // registered at all)
     #[cfg(target_os = "android")]
     {
-        builder = builder.plugin(mobile::service_plugin());
+        builder = builder.plugin(megathrone_core::mobile::service_plugin());
     }
 
     builder
@@ -119,11 +71,8 @@ pub fn run() {
                     .map_err(|e| format!("failed to seed the default test sites: {e}"))?;
                 discovery::seed_discovery_sources(&connection)
                     .map_err(|e| format!("failed to seed the discovery sources: {e}"))?;
-                app.manage(AppState {
-                    db: Mutex::new(connection),
-                    auto_update_notify: notify,
-                });
-                scheduler::spawn(app.handle().clone(), auto_update_notify.clone());
+                app.manage(megathrone_core::AppState::new(connection, notify.clone()));
+                megathrone_core::scheduler::spawn(app.handle().clone(), notify);
                 // undo whatever a hard-killed previous session left behind,
                 // and make Ctrl+C/SIGTERM go through the graceful exit path
                 connection::recover(app.handle());
@@ -137,7 +86,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            sing_box_version,
+            megathrone_core::process::sing_box_version,
             profiles::profiles_list,
             profiles::profile_get,
             profiles::profile_import_from_url,
@@ -193,8 +142,8 @@ pub fn run() {
             sites::sites_update_rule,
             sites::sites_set_rule_test,
             sites::sites_delete_rule,
-            routing::routing_list,
-            routing::routing_set_fallback,
+            megathrone_core::routing::routing_list,
+            megathrone_core::routing::routing_set_fallback,
             discovery::discovery_sources_list,
             discovery::discovery_source_add,
             discovery::discovery_source_update,
@@ -214,7 +163,7 @@ pub fn run() {
                 // the tray is always alive, so defaulting to "hide" on a
                 // broken settings read cannot strand the user
                 let close_to_tray = app
-                    .try_state::<AppState>()
+                    .try_state::<megathrone_core::AppState>()
                     .and_then(|state| {
                         let conn = state.db.lock().ok()?;
                         settings::load_general(&conn).ok()

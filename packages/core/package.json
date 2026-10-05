@@ -1,0 +1,34 @@
+{
+  "name": "@megathrone/core",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/App.tsx",
+    "./platform": "./src/platform/context.tsx",
+    "./types": "./src/types.ts",
+    "./index.css": "./src/index.css",
+    "./src/*": "./src/*"
+  },
+  "dependencies": {
+    "@elysiumorg/solid-use": "^0.1.25",
+    "@formkit/drag-and-drop": "^0.6.1",
+    "@solid-primitives/event-listener": "^2.4.6",
+    "@solid-primitives/resize-observer": "^2.2.0",
+    "@solidjs/router": "^0.15.3",
+    "clsx": "^2.1.1",
+    "solid-icons": "^1.2.0",
+    "solid-js": "^1.9.9",
+    "solid-transition-group": "^0.3.0",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "daisyui": "^5.0.0",
+    "tailwindcss": "^4.1.11",
+    "typescript": "^5.9.0"
+  }
+}

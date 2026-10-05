@@ -1,0 +1,44 @@
+[package]
+name = "megathrone-core"
+version = "0.1.0"
+description = "Megathrone shared backend library (used by the Tauri app and the web server)"
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "megathrone_core"
+path = "src/lib.rs"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+url = "2.5.8"
+percent-encoding = "2.3.2"
+base64 = "0.23.1"
+ureq = { version = "3.4.1", features = ["json"] }
+tokio = { version = "1.53.1", features = ["macros", "sync", "time", "signal"] }
+# the sidecar process plumbing (see process.rs): one shared wait/kill
+# surface over the spawned sing-box/byedpi children, desktop and Android
+shared_child = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# the Windows system proxy (registry + WinINet refresh broadcast) and the
+# TUN elevation check
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinInet",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+# Android: JNI access to the Activity (nativeLibraryDir for the sidecar
+# binaries packaged as fake .so jniLibs, the foreground-service plugin)
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"

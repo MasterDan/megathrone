@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* The stylesheet lives in @megathrone/core but is compiled by whichever
+ * app (tauri/web) imports it, and Tailwind's automatic source detection
+ * starts from the *app's* root — the core sources outside it would never
+ * be scanned. Make them explicit; paths resolve relative to this file. */
+@source "./**/*.{ts,tsx}";
+
+@plugin "daisyui";

@@ -14,7 +14,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Listener, Manager, Wry};
 
-use crate::connection::{self, ConnectionSnapshot, CONNECTION_CHANGED_EVENT};
+use megathrone_core::connection::{self, ConnectionSnapshot, CONNECTION_CHANGED_EVENT};
 
 const TRAY_ID: &str = "main";
 

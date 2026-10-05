@@ -4,10 +4,10 @@
   "version": "0.3.0",
   "identifier": "com.megathrone.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm --filter @megathrone/tauri dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "pnpm --filter @megathrone/tauri build",
+    "frontendDist": "../packages/tauri/dist"
   },
   "app": {
     "windows": [

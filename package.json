@@ -6,34 +6,14 @@
   "license": "MIT",
   "packageManager": "pnpm@11.21.0",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "dev": "pnpm --filter @megathrone/tauri dev",
+    "build": "pnpm --filter @megathrone/tauri build",
+    "preview": "pnpm --filter @megathrone/tauri preview",
+    "typecheck": "pnpm -r typecheck",
     "tauri": "tauri"
   },
-  "dependencies": {
-    "@elysiumorg/solid-use": "^0.1.25",
-    "@formkit/drag-and-drop": "^0.6.1",
-    "@solid-primitives/event-listener": "^2.4.6",
-    "@solid-primitives/resize-observer": "^2.2.0",
-    "@solidjs/router": "^0.15.3",
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "^2.7.3",
-    "clsx": "^2.1.1",
-    "solid-icons": "^1.2.0",
-    "solid-js": "^1.9.9",
-    "solid-transition-group": "^0.3.0",
-    "uplot": "^1.6.32"
-  },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.11",
     "@tauri-apps/cli": "^2.9.0",
-    "@types/node": "^22.20.2",
-    "daisyui": "^5.0.0",
-    "tailwindcss": "^4.1.11",
-    "typescript": "^5.9.0",
-    "vite": "^7.1.0",
-    "vite-plugin-solid": "^2.11.0"
+    "typescript": "^5.9.0"
   }
 }

@@ -7,6 +7,15 @@ settings:
 importers:
 
   .:
+    devDependencies:
+      '@tauri-apps/cli':
+        specifier: ^2.9.0
+        version: 2.11.4
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  packages/core:
     dependencies:
       '@elysiumorg/solid-use':
         specifier: ^0.1.25
@@ -23,12 +32,6 @@ importers:
       '@solidjs/router':
         specifier: ^0.15.3
         version: 0.15.4(solid-js@1.9.15)
-      '@tauri-apps/api':
-        specifier: ^2.11.1
-        version: 2.11.1
-      '@tauri-apps/plugin-dialog':
-        specifier: ^2.7.3
-        version: 2.7.3
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -45,12 +48,65 @@ importers:
         specifier: ^1.6.32
         version: 1.6.32
     devDependencies:
+      daisyui:
+        specifier: ^5.0.0
+        version: 5.7.34
+      tailwindcss:
+        specifier: ^4.1.11
+        version: 4.3.3
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  packages/tauri:
+    dependencies:
+      '@megathrone/core':
+        specifier: workspace:*
+        version: link:../core
+      '@tauri-apps/api':
+        specifier: ^2.11.1
+        version: 2.11.1
+      '@tauri-apps/plugin-dialog':
+        specifier: ^2.7.3
+        version: 2.7.3
+      solid-js:
+        specifier: ^1.9.9
+        version: 1.9.15
+    devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.1.11
         version: 4.3.3(vite@7.3.6(@types/node@22.20.2)(jiti@2.7.0)(lightningcss@1.32.0))
-      '@tauri-apps/cli':
-        specifier: ^2.9.0
-        version: 2.11.4
+      '@types/node':
+        specifier: ^22.20.2
+        version: 22.20.2
+      daisyui:
+        specifier: ^5.0.0
+        version: 5.7.34
+      tailwindcss:
+        specifier: ^4.1.11
+        version: 4.3.3
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.1.0
+        version: 7.3.6(@types/node@22.20.2)(jiti@2.7.0)(lightningcss@1.32.0)
+      vite-plugin-solid:
+        specifier: ^2.11.0
+        version: 2.11.14(solid-js@1.9.15)(vite@7.3.6(@types/node@22.20.2)(jiti@2.7.0)(lightningcss@1.32.0))
+
+  packages/web:
+    dependencies:
+      '@megathrone/core':
+        specifier: workspace:*
+        version: link:../core
+      solid-js:
+        specifier: ^1.9.9
+        version: 1.9.15
+    devDependencies:
+      '@tailwindcss/vite':
+        specifier: ^4.1.11
+        version: 4.3.3(vite@7.3.6(@types/node@22.20.2)(jiti@2.7.0)(lightningcss@1.32.0))
       '@types/node':
         specifier: ^22.20.2
         version: 22.20.2
