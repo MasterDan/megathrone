@@ -16,11 +16,11 @@ use std::sync::Arc;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{broadcast, Notify};
 use tower_http::services::{ServeDir, ServeFile};
 
 use megathrone_core::env;
-use megathrone_core::{AppState, connection, db, discovery, dpi, scheduler, sites};
+use megathrone_core::{connection, db, discovery, dpi, scheduler, sites, AppState};
 
 use crate::events::WebSink;
 
@@ -98,7 +98,10 @@ async fn main() {
         }
     };
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        eprintln!("failed to create the data directory {} — {e}", data_dir.display());
+        eprintln!(
+            "failed to create the data directory {} — {e}",
+            data_dir.display()
+        );
         std::process::exit(1);
     }
     let database = match db::open(&data_dir.join("megathrone.db"), &db::Migrations::embedded()) {
@@ -169,7 +172,7 @@ async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         let terminate = match signal(SignalKind::terminate()) {
             Ok(terminate) => terminate,
             Err(_) => {

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Tauri v2 desktop + Android proxy client (codename Megathrone). Frontend: Vite 7 + SolidJS + Tailwind CSS 4 + DaisyUI 5. Backend: Rust with sing-box bundled as a sidecar binary. Package manager: **pnpm**.
+Two apps, one shared core per side (codename Megathrone): the **Tauri v2 desktop + Android client** and the **console web server** (`megathrone-web`) that serves an equivalent UI in a browser. Frontend: Vite 7 + SolidJS + Tailwind CSS 4 + DaisyUI 5. Backend: Rust with sing-box bundled as a sidecar binary. Shared code lives in the two core projects — `@megathrone/core` (the entire UI, TypeScript) and `megathrone-core` (the entire backend, Rust); the shells (`packages/tauri`/`packages/web` and `src-tauri` root/`crates/web`) are thin layers over them. Package manager: **pnpm**.
 
 ## Repository layout (workspaces)
 
@@ -11,7 +11,7 @@ Two workspaces share the repo; open `megathrone.code-workspace` in VS Code (the 
   - `packages/tauri` (`@megathrone/tauri`) — the Tauri shell: `<TauriContext><App/></TauriContext>` (`src/tauriContext.tsx` bridges the platform API to `@tauri-apps/api` + `plugin-dialog`). Owns `index.html`, `.env.development`, vite config (port 1420, `TAURI_ENV_` env prefix); `tauri.conf.json`'s `frontendDist`/beforeCommands point here.
   - `packages/web` (`@megathrone/web`) — the browser shell: `<WebContext><App/></WebContext>` (`src/webContext.tsx` bridges the platform API to HTTP: `invoke` → `POST /api/<command>`, `listen` → SSE `/api/events` — ONE shared `EventSource` for every subscription, auto-reconnecting; last listener out closes the stream — `pickImportFile` → file input). Vite port 1421, `/api` proxied to `127.0.0.1:8420` in dev.
   - The root package.json keeps only workspace scripts (`dev`/`build` filter `@megathrone/tauri`; `typecheck` runs `pnpm -r typecheck`) + the Tauri CLI.
-- **cargo** (`src-tauri/Cargo.toml` is the workspace root AND the tauri app package):
+- **cargo** (`src-tauri/Cargo.toml` is the workspace root AND the tauri app package — the workspace holds the two apps plus the shared backend `megathrone-core`, mirroring the pnpm side):
   - `src-tauri/crates/core/src//` — the Tauri app (`megathrone`, lib `megathrone_lib`): `main.rs`, `lib.rs run()` (builder, command registry over `megathrone_core::*`), `tray.rs` (desktop-only). build.rs (sidecar download) unchanged.
   - `src-tauri/crates/core` (`megathrone-core`) — the whole backend library: db, parser, profiles, connection, latency, auto_select, dpi, dpi_test, sites, routing, scheduler, settings, discovery, process, mobile, env. Still depends on `tauri` (commands keep `#[tauri::command]` wrappers over pure storage fns) but no longer threads `AppHandle`/`State` through anything: every fn reads state and broadcasts events through the process-global `env` module (`env::state()`/`env::emit`/`env::data_dir`, installed once at shell startup via `env::install_tauri`/`env::install`). Its build.rs replicates tauri's `desktop`/`mobile` cfg flags. Migrations still live at `src-tauri/migrations/` (include_str! paths reach them from the crate).
   - `src-tauri/crates/web` (`megathrone-web`) — the console web server: clap (`--port`, default 8420; `--host`, `--data-dir`, default the OS data dir under `megathrone-web` — separate from the desktop app's, so both can run), axum. Performs the same startup the Tauri setup hook does (db + seeds + `env::install` with the SSE sink + scheduler + crash recovery + graceful `connection::shutdown` on Ctrl+C/SIGTERM), serves `packages/web/dist` (found via `MEGATHRONE_WEB_DIST` env, else the repo-relative baked path), `GET /api/health`, `POST /api/<command>` (the full command surface over `megathrone-core`, same names/camelCase args as the Tauri IPC — split per domain in `src/api/`) and `GET /api/events` (SSE: every `env::emit` broadcast forwarded as a named event). Sidecars resolve through `MEGATHRONE_SIDECAR_DIR` (accepts bare and `<name>-<triple>` staging names) — point it at `src-tauri/binaries` when running via `cargo run`.
@@ -25,7 +25,7 @@ pnpm tauri android build --apk --target aarch64 --ci   # release APK (arm64)
 pnpm dev / pnpm build             # tauri-shell frontend only (vite)
 pnpm --filter @megathrone/web dev   # web-shell frontend (vite, port 1421)
 pnpm typecheck                    # tsc --noEmit for every package (core + tauri + web, src and node configs)
-cargo test --manifest-path src-tauri/Cargo.toml --workspace --lib      # all Rust tests (they live in megathrone-core)
+cargo test --manifest-path src-tauri/Cargo.toml --workspace      # all Rust tests (most live in megathrone-core's lib; megathrone-web's tests live in its bin — a bin-only crate, so `--lib` alone silently skips them)
 cargo test --manifest-path src-tauri/Cargo.toml -p megathrone-core --lib parser::parser_tests::parses_vmess_base64  # single test
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace          # must be warning-free
 MEGATHRONE_SIDECAR_DIR=src-tauri/binaries cargo run --manifest-path src-tauri/Cargo.toml -p megathrone-web -- --port 8420   # console web server (the env var stages the sidecars; build the web UI first: pnpm --filter @megathrone/web build)
@@ -37,7 +37,7 @@ Opt-in parser test against a real subscription file (skipped without the env var
 MEGATHRONE_REAL_SUB=path/to/sub.txt cargo test --manifest-path src-tauri/Cargo.toml -p megathrone-core --lib real_world_file
 ```
 
-Verify a full change: `pnpm typecheck && pnpm build` plus `cargo clippy` and `cargo test --workspace --lib`. For android-affecting Rust changes also `cargo check --lib --target aarch64-linux-android` (needs the NDK env below for first-time byedpi/`ring` builds; afterwards the cache suffices).
+Verify a full change: `pnpm typecheck && pnpm build` plus `cargo clippy` and `cargo test --workspace` (NOT `--workspace --lib` — megathrone-web's bin tests would be skipped). For android-affecting Rust changes also `cargo check --lib --target aarch64-linux-android` (needs the NDK env below for first-time byedpi/`ring` builds; afterwards the cache suffices).
 
 ## Android (local env)
 

@@ -570,11 +570,11 @@ pub(super) fn restore_system_proxy(_backup: &SystemProxyBackup) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     #[cfg(target_os = "macos")]
     fn parse_proxy_state_handles_enabled_and_disabled() {
+        use super::*;
+
         let disabled = "\
 Enabled: No
 Server:

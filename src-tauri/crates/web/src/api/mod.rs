@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(opt::<String>(&body, "name").unwrap(), None);
         assert_eq!(opt::<String>(&json!({}), "name").unwrap(), None);
         assert_eq!(
-            opt::<String>(&json!({ "name": 5 })).unwrap_err(),
+            opt::<String>(&json!({ "name": 5 }), "name").unwrap_err(),
             "invalid argument `name`: invalid type: integer `5`, expected a string"
         );
     }
