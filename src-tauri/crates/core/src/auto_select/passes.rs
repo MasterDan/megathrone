@@ -129,32 +129,6 @@ fn pass_scope(sticky_pass: bool, has_reachable: bool, has_untested: bool) -> lat
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::pass_scope;
-    use crate::latency;
-
-    #[test]
-    fn pass_scope_rechecks_only_reachable_endpoints() {
-        assert_eq!(pass_scope(false, true, false), latency::ScanScope::ReachableOnly);
-        // a sticky pass after a diff update only needs the never-tested
-        // rows — survivors keep their results through the update
-        assert_eq!(pass_scope(true, true, false), latency::ScanScope::UntestedOnly);
-        assert_eq!(pass_scope(false, false, false), latency::ScanScope::All);
-        // ...but with no reachable set left the sticky pass goes full
-        assert_eq!(pass_scope(true, false, false), latency::ScanScope::All);
-        // a regular pass picks up never-tested rows (e.g. connected right
-        // after an update whose sticky pass nobody ran) alongside the
-        // reachable re-check
-        assert_eq!(
-            pass_scope(false, true, true),
-            latency::ScanScope::ReachableAndUntested
-        );
-        // nothing reachable known → a full scan covers the untested anyway
-        assert_eq!(pass_scope(false, false, true), latency::ScanScope::All);
-    }
-}
-
 pub(super) fn has_reachable_endpoint(profile_id: i64) -> bool {
     let state = env::state();
     let Ok(conn) = state.db.lock() else { return false };
@@ -240,5 +214,31 @@ pub(super) async fn apply_pass(
             profiles::after_mutation(Some(profile_id), profiles::SELECTION);
             let _ = connection::switch_endpoint_if_running(profile_id).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pass_scope;
+    use crate::latency;
+
+    #[test]
+    fn pass_scope_rechecks_only_reachable_endpoints() {
+        assert_eq!(pass_scope(false, true, false), latency::ScanScope::ReachableOnly);
+        // a sticky pass after a diff update only needs the never-tested
+        // rows — survivors keep their results through the update
+        assert_eq!(pass_scope(true, true, false), latency::ScanScope::UntestedOnly);
+        assert_eq!(pass_scope(false, false, false), latency::ScanScope::All);
+        // ...but with no reachable set left the sticky pass goes full
+        assert_eq!(pass_scope(true, false, false), latency::ScanScope::All);
+        // a regular pass picks up never-tested rows (e.g. connected right
+        // after an update whose sticky pass nobody ran) alongside the
+        // reachable re-check
+        assert_eq!(
+            pass_scope(false, true, true),
+            latency::ScanScope::ReachableAndUntested
+        );
+        // nothing reachable known → a full scan covers the untested anyway
+        assert_eq!(pass_scope(false, false, true), latency::ScanScope::All);
     }
 }

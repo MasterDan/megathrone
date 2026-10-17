@@ -29,6 +29,7 @@ pub mod profiles;
 pub mod routing;
 pub mod scheduler;
 pub mod settings;
+pub mod singleton;
 pub mod sites;
 
 /// The shared application state: the SQLite handle (behind a std mutex —

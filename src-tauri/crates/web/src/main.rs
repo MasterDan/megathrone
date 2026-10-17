@@ -5,6 +5,11 @@
 //! (`packages/web/dist`), the command bridge `POST /api/<command>` and the
 //! event stream `GET /api/events` (SSE) the browser shell's
 //! `PlatformApi` talks to.
+//!
+//! One Megathrone per machine: the server shares the desktop app's data
+//! directory (one database) and takes the global single-instance lock
+//! (`megathrone_core::singleton`) before anything else — a second copy of
+//! either shell is refused, not raced.
 
 mod api;
 mod events;
@@ -20,6 +25,7 @@ use tokio::sync::{broadcast, Notify};
 use tower_http::services::{ServeDir, ServeFile};
 
 use megathrone_core::env;
+use megathrone_core::singleton;
 use megathrone_core::{connection, db, discovery, dpi, scheduler, sites, AppState};
 
 use crate::events::WebSink;
@@ -51,16 +57,6 @@ struct Args {
     /// Interface to bind. Defaults to loopback only.
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
-    /// Data directory (database, session marker). Defaults to the OS data
-    /// dir — deliberately separate from the desktop app's, so both can run.
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
-}
-
-fn default_data_dir() -> Result<PathBuf, String> {
-    dirs::data_dir()
-        .map(|dir| dir.join("megathrone-web"))
-        .ok_or_else(|| "cannot resolve the OS data directory — pass --data-dir".to_string())
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -89,20 +85,23 @@ async fn main() {
     // the same startup the Tauri shell runs in its setup hook: open (and
     // migrate) the database, seed the default catalogs, install the core
     // environment — here with the SSE sink instead of the app's event bus
-    // — arm the scheduler and recover from an unclean previous death
-    let data_dir = match args.data_dir.map_or_else(default_data_dir, Ok) {
+    // — arm the scheduler and recover from an unclean previous death.
+    // Before any of it: the desktop app's own data directory (one shared
+    // database) and the global instance lock — a second Megathrone of any
+    // kind is refused here, before a single sidecar or proxy setting moves
+    let data_dir = match singleton::canonical_data_dir() {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(2);
         }
     };
-    if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        eprintln!(
-            "failed to create the data directory {} — {e}",
-            data_dir.display()
-        );
-        std::process::exit(1);
+    match singleton::acquire(&data_dir) {
+        Ok(lock) => std::mem::forget(lock),
+        Err(e) => {
+            eprintln!("cannot start: {e}");
+            std::process::exit(1);
+        }
     }
     let database = match db::open(&data_dir.join("megathrone.db"), &db::Migrations::embedded()) {
         Ok(database) => database,

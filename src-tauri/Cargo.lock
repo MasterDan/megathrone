@@ -2050,6 +2050,7 @@ name = "megathrone-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "dirs",
  "jni",
  "libc",
  "ndk-context",
@@ -2072,7 +2073,6 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
- "dirs",
  "megathrone-core",
  "serde",
  "serde_json",

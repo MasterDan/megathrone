@@ -43,6 +43,24 @@ pub fn run() {
             let notify = auto_update_notify.clone();
             move |app| {
                 let data_dir = app.path().app_data_dir()?;
+                // one Megathrone per machine: the console web server shares
+                // this data directory and its database, so a second instance
+                // of either shell is refused (desktop only — Android's
+                // single-process app model already guarantees it)
+                #[cfg(desktop)]
+                {
+                    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                    match megathrone_core::singleton::acquire(&data_dir) {
+                        Ok(lock) => std::mem::forget(lock),
+                        Err(e) => {
+                            app.dialog()
+                                .message(format!("Megathrone cannot start: {e}."))
+                                .kind(MessageDialogKind::Error)
+                                .blocking_show();
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 std::fs::create_dir_all(&data_dir)?;
                 // the SQL migrations bundled as app resources (desktop); on
                 // Android the resource dir is the virtual asset:// URI Rust

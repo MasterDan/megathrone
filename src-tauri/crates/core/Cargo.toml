@@ -22,6 +22,7 @@ tokio = { version = "1.53.1", features = ["macros", "sync", "time", "signal"] }
 # the sidecar process plumbing (see process.rs): one shared wait/kill
 # surface over the spawned sing-box/byedpi children, desktop and Android
 shared_child = "1"
+dirs = "6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
